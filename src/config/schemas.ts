@@ -1,4 +1,4 @@
-import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig } from '../types';
+import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig } from '../types';
 import { validateRegex, extractDomain } from '../utils/helpers';
 
 export class ConfigValidationError extends Error {
@@ -197,20 +197,69 @@ export function validateWorkspaceConfig(config: any): WorkspaceConfig {
   };
 }
 
+export function validateOpenCodeConfig(config: any): OpenCodeConfig | undefined {
+  if (!config) return undefined;
+  
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new ConfigValidationError('OpenCode enabled must be a boolean');
+  }
+  
+  if (config.hostname !== undefined && typeof config.hostname !== 'string') {
+    throw new ConfigValidationError('OpenCode hostname must be a string');
+  }
+  if (config.provider !== undefined && typeof config.provider !== 'string') {
+    throw new ConfigValidationError('OpenCode provider must be a string');
+  }
+  if (config.model !== undefined && typeof config.model !== 'string') {
+    throw new ConfigValidationError('OpenCode model must be a string');
+  }
+  if (config.systemPrompt !== undefined && typeof config.systemPrompt !== 'string') {
+    throw new ConfigValidationError('OpenCode systemPrompt must be a string');
+  }
+  if (config.includeThreadHistory !== undefined && typeof config.includeThreadHistory !== 'boolean') {
+    throw new ConfigValidationError('OpenCode includeThreadHistory must be a boolean');
+  }
+  
+  return {
+    enabled: config.enabled ?? true,
+    hostname: config.hostname,
+    provider: config.provider,
+    model: config.model,
+    systemPrompt: config.systemPrompt,
+    includeThreadHistory: config.includeThreadHistory ?? true,
+  };
+}
+
 export function validateReplyConfig(config: any): ReplyConfig {
   if (!config) {
-    return { enabled: false, text: '' };
+    return { enabled: false, mode: 'static', text: '' };
   }
   if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
     throw new ConfigValidationError('Reply enabled must be a boolean');
+  }
+  if (config.mode && !['static', 'opencode'].includes(config.mode)) {
+    throw new ConfigValidationError('Reply mode must be "static" or "opencode"');
   }
   if (config.text !== undefined && typeof config.text !== 'string') {
     throw new ConfigValidationError('Reply text must be a string');
   }
 
+  const opencodeConfig = validateOpenCodeConfig(config.opencode);
+
+  const attachmentConfig = config.attachments && config.attachments.enabled
+    ? {
+        enabled: true,
+        maxFileSize: config.attachments.maxFileSize ?? 10 * 1024 * 1024,
+        allowedExtensions: config.attachments.allowedExtensions || ['.ppt', '.pptx', '.doc', '.docx', '.txt', '.md'],
+      }
+    : undefined;
+
   return {
     enabled: config.enabled ?? false,
+    mode: config.mode ?? 'static',
     text: config.text ?? '',
+    opencode: opencodeConfig,
+    attachments: attachmentConfig,
   };
 }
 

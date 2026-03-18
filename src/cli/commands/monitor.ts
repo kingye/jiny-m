@@ -1,7 +1,8 @@
-import { ConfigManager } from '../../config';
-import { EmailMonitor } from '../../services/imap/monitor';
+import { EmailMonitor, type GeneratedFile, type AttachmentConfig } } from '../../services/imap/monitor';
+import type { ConfigManager } from '../../config';
 import { EmailStorage } from '../../services/storage';
 import { SmtpService } from '../../services/smtp';
+import { OpenCodeService } from '../../services/opencode';
 import { OutputFormatter } from '../../output';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
@@ -15,7 +16,11 @@ export interface MonitorCommandOptions {
   reset?: boolean;
 }
 
+let monitorInstance: EmailMonitor | undefined;
+
 export async function monitorCommand(options: MonitorCommandOptions): Promise<void> {
+  let opencodeService: OpenCodeService | undefined;
+  
   try {
     if (options.reset) {
       logger.info('Resetting monitoring state...');
@@ -74,6 +79,12 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         }
       }
     }
+
+    // Initialize OpenCode service if opencode mode is enabled
+    if (replyConfig.enabled && replyConfig.mode === 'opencode' && replyConfig.opencode) {
+      opencodeService = new OpenCodeService(replyConfig.opencode);
+      logger.info('OpenCode AI service initialized');
+    }
     
     const monitor = new EmailMonitor(
       imapConfig,
@@ -85,6 +96,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       options.debug ?? false
     );
     
+    monitorInstance = monitor;
     await monitor.start({
       once: options.once ?? false,
       useIdle: options.noIdle ? false : (watchConfig.useIdle ?? true),
@@ -93,22 +105,81 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         console.log(formatter.format(email));
         
         // Store email as markdown in thread folder
+        let threadPath: string | undefined;
         try {
-          const filePath = await storage.store(email, patternMatch);
-          logger.info('Email saved to workspace', { file: filePath, pattern: patternMatch.patternName });
+          const result = await storage.store(email, patternMatch);
+          threadPath = result.threadPath;
+          logger.info('Email saved to workspace', { file: result.filePath, pattern: patternMatch.patternName });
         } catch (err) {
           logger.error('Failed to save email to workspace', { error: err instanceof Error ? err.message : 'Unknown error' });
         }
 
         // Send auto-reply if enabled
-        if (replyConfig.enabled && smtpService) {
+        if (replyConfig.enabled && smtpService && threadPath) {
           try {
-            await smtpService.replyToEmail(email, replyConfig.text);
-            logger.info('Auto-reply sent', { to: email.from, subject: email.subject });
-          } catch (err) {
-            logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
+            let replyText: string;
+            let attachments: Array<{ filename: string; path: string; contentType: string }> | undefined;
+
+            // Get thread directory files before AI processing (for fallback detection)
+            const filesBeforeAI = replyConfig.mode === 'opencode' && replyConfig.attachments?.enabled
+              ? await (await import('node:fs')).promises.readdir(threadPath).then(files => new Set(files.filter(f => !f.startsWith('.'))))
+              : null;
+
+            if (replyConfig.mode === 'opencode' && opencodeService) {
+              // Generate AI reply
+              logger.info('Generating AI reply...', { to: email.from });
+              const aiReply = await opencodeService.generateReply(email, threadPath);
+              replyText = aiReply.text;
+
+              // Check if reply is empty
+              if (!replyText || replyText.trim().length === 0) {
+                logger.warn('Generated reply is empty, skipping send', { to: email.from });
+                await storage.storeReply(threadPath, '[Empty reply - not sent]', email);
+                return;
+              }
+
+              // Prepare attachments
+              if (aiReply.attachments.length > 0) {
+                attachments = await prepareAttachments(
+                  aiReply.attachments,
+                  threadPath,
+                  replyConfig.attachments
+                );
+              } else if (filesBeforeAI && replyConfig.attachments?.enabled) {
+                // Fallback: scan for new files if OpenCode didn't return FileParts
+                attachments = await detectNewFiles(
+                  filesBeforeAI,
+                  threadPath,
+                  replyConfig.attachments
+                );
+              }
+
+              // Store AI reply in thread folder
+              await storage.storeReply(threadPath, replyText, email);
+            } else if (replyConfig.mode === 'static') {
+              replyText = replyConfig.text || '';
+            } else {
+              logger.warn('No reply mode configured, skipping reply');
+              return;
+            }
+
+            await smtpService.replyToEmail(email, replyText, attachments);
+              logger.info('Auto-reply sent', {
+                to: email.from,
+                subject: email.subject,
+                mode: replyConfig.mode,
+                attachmentCount: attachments?.length || 0
+              });
+              
+              if (!options.once && monitorInstance) {
+                // Trigger immediate email check after long AI processing
+                logger.info('Triggering immediate email check after AI processing...');
+                await monitorInstance.checkNow();
+              }
+            } catch (err) {
+              logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
+            }
           }
-        }
       },
       onError: (error) => {
         logger.error('Monitor error callback', { error: error.message });
@@ -119,5 +190,124 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Monitor command failed', { error: errorMessage });
     process.exit(1);
+  } finally {
+    // Cleanup OpenCode service
+    if (opencodeService) {
+      await opencodeService.close();
+    }
   }
 }
+
+// Helper methods for attachment handling
+async function prepareAttachments(
+  aiAttachments: GeneratedFile[],
+  threadPath: string,
+  attachmentConfig: AttachmentConfig | undefined
+): Promise<Array<{ filename: string; path: string; contentType: string }>> {
+  if (!attachmentConfig || !attachmentConfig.enabled) {
+    return [];
+  }
+
+  const fs = await import('node:fs');
+  const attachments: Array<{ filename: string; path: string; contentType: string }> = [];
+
+  for (const file of aiAttachments) {
+    const filePath = join(threadPath, file.filename);
+
+    try {
+      const fileExists = await fs.promises.access(filePath).then(() => true).catch(() => false);
+      if (!fileExists) {
+        logger.warn('File not found, skipping attachment', { filename: file.filename });
+        continue;
+      }
+
+      const stats = await fs.promises.stat(filePath);
+      if (stats.size > attachmentConfig.maxFileSize) {
+        logger.warn('File exceeds size limit, skipping attachment', {
+          filename: file.filename,
+          size: stats.size,
+          maxSize: attachmentConfig.maxFileSize,
+        });
+        continue;
+      }
+
+      const ext = '.' + file.filename.split('.').pop()?.toLowerCase() || '';
+      if (!attachmentConfig.allowedExtensions.includes(ext)) {
+        logger.debug('File extension not in allowed list, skipping', {
+          filename: file.filename,
+          ext,
+          allowed: attachmentConfig.allowedExtensions.join(', ')
+        });
+        continue;
+      }
+
+      attachments.push({
+        filename: file.filename,
+        path: filePath,
+        contentType: file.mime || 'application/octet-stream',
+      });
+      logger.debug('Will attach file', {
+        filename: file.filename,
+        size: stats.size,
+        contentType: file.mime
+      });
+    } catch (error) {
+      logger.error('Failed to prepare attachment', {
+        filename: file.filename,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  return attachments;
+}
+
+async function detectNewFiles(
+  filesBeforeAI: Set<string>,
+  threadPath: string,
+  attachmentConfig: AttachmentConfig
+): Promise<Array<{ filename: string; path: string; contentType: string }>> {
+  if (!attachmentConfig || !attachmentConfig.enabled) {
+    return [];
+  }
+
+  const fs = await import('node:fs');
+  const filesAfterAI = await fs.promises.readdir(threadPath);
+  const attachments: Array<{ filename: string; path: string; contentType: string }> = [];
+
+  for (const file of filesAfterAI) {
+    if (file.startsWith('.') || filesBeforeAI.has(file)) {
+      continue;
+    }
+
+    const filePath = join(threadPath, file);
+
+    try {
+      const stats = await fs.promises.stat(filePath);
+      if (stats.isDirectory()) continue;
+
+      if (stats.size > attachmentConfig.maxFileSize) {
+        logger.warn('File exceeds size limit, skipping', { filename: file, size: stats.size, maxSize: attachmentConfig.maxFileSize });
+        continue;
+      }
+
+      const ext = '.' + file.split('.').pop()?.toLowerCase() || '';
+      if (!attachmentConfig.allowedExtensions.includes(ext)) {
+        logger.debug('File extension not in allowed list, skipping', { filename: file, ext });
+        continue;
+      }
+
+      attachments.push({
+        filename: file,
+        path: filePath,
+        contentType: `application/${ext.substring(1)}`,
+      });
+      logger.info('Found new AI-generated file via fallback detection', { filename: file, size: stats.size });
+    } catch (error) {
+      logger.warn('Failed to check file for attachment', { filename: file, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  return attachments;
+}
+

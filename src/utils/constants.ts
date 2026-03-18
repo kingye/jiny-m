@@ -10,11 +10,27 @@ export const DEFAULT_SMTP_CONFIG = {
   tls: true,
 };
 
+export const DEFAULT_REPLY_CONFIG = {
+  enabled: false,
+  mode: 'static' as 'static' | 'opencode',
+  text: '',
+  attachments: {
+    enabled: true,
+    maxFileSize: 10 * 1024 * 1024,  // 10MB
+    allowedExtensions: ['.ppt', '.pptx', '.doc', '.docx', '.txt', '.md'],
+  },
+};
+
 export const DEFAULT_WATCH_CONFIG = {
   checkInterval: 30,
   maxRetries: 5,
   useIdle: true,
   folder: 'INBOX',
+  reconnect: {
+    maxAttempts: 10,
+    baseDelay: 5000,
+    maxDelay: 60000,
+  },
 };
 
 export const DEFAULT_OUTPUT_CONFIG = {

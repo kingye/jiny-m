@@ -55,7 +55,15 @@ export async function initConfigCommand(configPath?: string): Promise<void> {
     },
     reply: {
       enabled: false,
+      mode: 'static',
       text: 'Thanks for reaching out! We have received your message and will get back to you shortly.',
+      opencode: {
+        enabled: true,
+        provider: 'SiliconFlow',
+        model: 'Pro/zai-org/GLM-5',
+        systemPrompt: 'You are an email-based AI assistant. Respond professionally and concisely.',
+        includeThreadHistory: true,
+      },
     },
   };
   

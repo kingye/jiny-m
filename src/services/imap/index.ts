@@ -20,7 +20,7 @@ export class ImapClient {
   private client: any = null;
   private verbose: boolean = false;
   private debug: boolean = false;
-  
+
   constructor(config: ImapConfig, verbose: boolean = false, debug: boolean = false) {
     this.config = config;
     this.verbose = verbose;
@@ -30,7 +30,7 @@ export class ImapClient {
   private async createConnection(): Promise<any> {
     try {
       const ImapFlow = await import('imapflow');
-      return new ImapFlow.ImapFlow({
+      const client = new ImapFlow.ImapFlow({
         host: this.config.host,
         port: this.config.port ?? 993,
         secure: this.config.tls,
@@ -40,6 +40,22 @@ export class ImapClient {
         },
         logger: this.verbose ? undefined : false,
       });
+
+      client.on('close', () => {
+        if (this.connected) {
+          logger.warn('IMAP connection closed by server');
+          this.connected = false;
+        }
+      });
+
+      client.on('error', (err: Error) => {
+        if (this.connected) {
+          logger.error('IMAP connection error', { error: err.message });
+          this.connected = false;
+        }
+      });
+
+      return client;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Failed to create IMAP connection', { error: errorMessage });
@@ -82,17 +98,23 @@ export class ImapClient {
     this.connected = false;
     this.retryCount = 0;
   }
-  
+
+  async reconnect(): Promise<void> {
+    logger.info('Attempting to reconnect to IMAP server...');
+    await this.disconnect();
+    await this.connect();
+  }
+
   private ensureConnected(): void {
     if (!this.connected || !this.client) {
       throw new Error('Not connected to IMAP server');
     }
   }
-  
+
   isConnected(): boolean {
     return this.connected;
   }
-  
+
   async fetchMessages(folder: string = 'INBOX', limit: number = 10): Promise<ImapEmail[]> {
     this.ensureConnected();
     

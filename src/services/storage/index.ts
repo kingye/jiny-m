@@ -1,8 +1,10 @@
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { Email, WorkspaceConfig, PatternMatch } from '../../types';
-import { sanitizeForFilename, deriveThreadName } from '../../core/email-parser';
+import { sanitizeForFilename, deriveThreadName, stripQuotedHistory } from '../../core/email-parser';
 import { logger } from '../../core/logger';
+
+// @ts-ignore - turndown module import
 import TurndownService from 'turndown';
 
 const turndownService = new TurndownService({
@@ -60,7 +62,9 @@ function emailToMarkdown(email: Email): string {
     bodyContent = '[No content]';
   }
 
-  lines.push(bodyContent);
+  // Remove quoted reply history to keep files small
+  const cleanedBody = stripQuotedHistory(bodyContent);
+  lines.push(cleanedBody);
   lines.push('');
 
   // Attachments
@@ -104,9 +108,12 @@ export class EmailStorage {
 
   /**
    * Store an email as a markdown file in the appropriate thread folder.
-   * Returns the file path where the email was saved.
+   * Returns the file path where the email was saved and the thread directory.
    */
-  async store(email: Email, patternMatch?: PatternMatch): Promise<string> {
+  async store(email: Email, patternMatch?: PatternMatch): Promise<{
+    filePath: string;
+    threadPath: string;
+  }> {
     // Derive thread folder name from the subject
     // Strip reply/forward prefixes and also the matched prefix if any
     const additionalPrefixes = patternMatch?.matches.subject?.prefix
@@ -119,17 +126,58 @@ export class EmailStorage {
     // Create thread directory
     await mkdir(threadDir, { recursive: true });
 
+    // Create .jiny subfolder for state files (emails, replies, sessions)
+    const stateDir = join(threadDir, '.jiny');
+    await mkdir(stateDir, { recursive: true });
+
     // Build filename: date_subject.md
     const dateStr = formatDateForFilename(email.date);
-    const subjectSlug = sanitizeForFilename(email.subject).substring(0, 80);
+    const subjectSlug = sanitizeForFilename(deriveThreadName(email.subject)).substring(0, 60);
     const filename = `${dateStr}_${subjectSlug}.md`;
-    const filePath = join(threadDir, filename);
+    const filePath = join(stateDir, filename);
 
     // Convert to markdown and write
     const markdown = emailToMarkdown(email);
     await writeFile(filePath, markdown, 'utf-8');
 
     logger.info('Email stored', { thread: threadName, file: filename });
+    return {
+      filePath,
+      threadPath: threadDir,
+    };
+  }
+
+  /**
+   * Get the thread directory path for a file path.
+   */
+  getThreadPath(filePath: string): string {
+    return dirname(filePath);
+  }
+
+  /**
+   * Store an AI reply in the thread folder.
+   * Returns the file path where the reply was saved.
+   */
+  async storeReply(threadPath: string, replyText: string, email: Email): Promise<string> {
+    const dateStr = formatDateForFilename(new Date());
+    const filename = `${dateStr}_auto-reply.md`;
+    const stateDir = join(threadPath, '.jiny');
+    const filePath = join(stateDir, filename);
+
+    const lines: string[] = [];
+    lines.push('---');
+    lines.push('type: auto-reply');
+    lines.push('---');
+    lines.push('');
+    lines.push('## AI Assistant');
+    lines.push('');
+    lines.push(replyText);
+    lines.push('');
+    lines.push('--- ');
+
+    await writeFile(filePath, lines.join('\n'), 'utf-8');
+    
+    logger.info('AI reply stored', { file: filename, thread: dirname(threadPath).split('/').pop() });
     return filePath;
   }
 }

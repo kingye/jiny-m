@@ -3,6 +3,7 @@ import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
 import TurndownService from 'turndown';
+import { stripQuotedHistory } from '../../core/email-parser';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -26,6 +27,11 @@ export interface ReplyOptions {
   inReplyTo?: string;
   references?: string[];
   messageId?: string;
+  attachments?: Array<{
+    filename: string;
+    path: string;
+    contentType: string;
+  }>;
 }
 
 export class SmtpService {
@@ -65,7 +71,41 @@ export class SmtpService {
     logger.info('Disconnected from SMTP server');
   }
 
+  async reconnect(): Promise<void> {
+    logger.info('Attempting to reconnect to SMTP server...');
+    await this.disconnect();
+    await this.connect();
+  }
+
+  isConnected(): boolean {
+    return this.transporter !== undefined;
+  }
+
   sendReply(options: ReplyOptions): Promise<string> {
+    return this.sendReplyInternal(options).catch(async (err) => {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const isConnectionError = errorMessage.toLowerCase().includes('connection') ||
+                                errorMessage.toLowerCase().includes('econn') ||
+                                errorMessage.toLowerCase().includes('timeout');
+
+      if (!isConnectionError) {
+        throw err;
+      }
+
+      logger.warn('Connection error sending reply, attempting reconnect and retry...', { error: errorMessage });
+
+      try {
+        await this.reconnect();
+        return await this.sendReplyInternal(options);
+      } catch (retryError) {
+        const retryErrorMessage = retryError instanceof Error ? retryError.message : 'Unknown error';
+        logger.error('Failed to send reply after reconnect', { error: retryErrorMessage });
+        throw new Error(`Failed to send reply after reconnect: ${retryErrorMessage}`);
+      }
+    });
+  }
+
+  private sendReplyInternal(options: ReplyOptions): Promise<string> {
     if (!this.transporter) {
       throw new Error('SMTP transporter not connected. Call connect() first.');
     }
@@ -101,6 +141,7 @@ export class SmtpService {
       html: options.html || this.markdownToHtml(options.text),
       messageId: replyMessageId,
       headers,
+      attachments: options.attachments || [],
     };
 
     return new Promise<string>((resolve, reject) => {
@@ -126,12 +167,16 @@ export class SmtpService {
     });
   }
 
-  async replyToEmail(email: Email, replyText: string): Promise<string> {
+  async replyToEmail(
+    email: Email,
+    replyText: string,
+    attachments?: Array<{ filename: string; path: string; contentType: string }>
+  ): Promise<string> {
     const toAddress = email.headers['reply-to'] || email.from;
-    
+
     const quotedOriginalEmail = this.quoteOriginalEmail(email);
     const fullReplyText = `${replyText}\n\n${quotedOriginalEmail}`;
-    
+
     return this.sendReply({
       to: toAddress,
       subject: email.subject,
@@ -139,45 +184,47 @@ export class SmtpService {
       inReplyTo: email.messageId,
       references: email.references,
       messageId: email.messageId,
+      attachments: attachments || [],
     });
   }
 
   private quoteOriginalEmail(email: Email): string {
     const lines: string[] = [];
-    
+
     const timeStr = email.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     let fromName = email.from || 'Unknown';
     if (fromName.includes('<')) {
       const parts = fromName.split('<');
       fromName = parts[0]?.trim().replace(/['"]/g, '') || fromName;
     }
-    
+
     // Chat-style quoted message
     lines.push('---');
     lines.push(`### ${fromName} (${timeStr})`);
     lines.push('> ' + email.subject);
     lines.push('');
-    
+
     if (email.body.text) {
-      const quotedBody = email.body.text
+      const cleanedBody = stripQuotedHistory(email.body.text);
+      const quotedBody = cleanedBody
         .split('\n')
         .map((line: string) => `> ${line}`)
         .join('\n');
       lines.push(quotedBody);
     } else if (email.body.html) {
-      const quotedHtml = turndownService.turndown(email.body.html);
-      const quotedBody = quotedHtml
+      const cleanedHtml = stripQuotedHistory(turndownService.turndown(email.body.html));
+      const quotedBody = cleanedHtml
         .split('\n')
         .map((line: string) => `> ${line}`)
         .join('\n');
       lines.push(quotedBody);
     }
-    
+
     return lines.join('\n');
   }
 
   private markdownToHtml(markdown: string): string {
-    const htmlBody = marked(markdown);
+    const htmlBody = marked.parse(markdown, { async: false }) as string;
     return `
       <html>
         <head>

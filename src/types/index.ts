@@ -15,11 +15,18 @@ export interface SmtpConfig {
   tls?: boolean;
 }
 
+export interface ReconnectConfig {
+  maxAttempts: number;
+  baseDelay: number;
+  maxDelay: number;
+}
+
 export interface WatchConfig {
   checkInterval: number;
   maxRetries: number;
   useIdle?: boolean;
   folder?: string;
+  reconnect?: ReconnectConfig;
 }
 
 export interface Pattern {
@@ -52,9 +59,34 @@ export interface WorkspaceConfig {
   folder: string;
 }
 
+export interface ThreadSession {
+  sessionId: string;
+  createdAt: string;
+  lastUsedAt: string;
+  emailCount: number;
+}
+
+export interface OpenCodeConfig {
+  enabled: boolean;
+  hostname?: string;
+  provider?: string;
+  model?: string;
+  systemPrompt?: string;
+  includeThreadHistory?: boolean;
+}
+
+export interface AttachmentConfig {
+  enabled: boolean;
+  maxFileSize: number;  // bytes, default: 10MB
+  allowedExtensions: string[];  // default: .ppt, .pptx, .doc, .docx, .txt, .md
+}
+
 export interface ReplyConfig {
   enabled: boolean;
-  text: string;
+  mode: 'static' | 'opencode';
+  text?: string;
+  opencode?: OpenCodeConfig;
+  attachments?: AttachmentConfig;  // NEW
 }
 
 export interface Config {
@@ -111,6 +143,18 @@ export interface PatternMatch {
       regex?: string;
     };
   };
+}
+
+export interface GeneratedFile {
+  filename: string;
+  url: string;
+  mime: string;
+  size?: number;
+}
+
+export interface AiGeneratedReply {
+  text: string;
+  attachments: GeneratedFile[];
 }
 
 export interface MonitorOptions {

@@ -43,6 +43,143 @@ function sanitizeForFilename(name: string): string {
     .substring(0, 200) || 'untitled';
 }
 
+/**
+ * Strip quoted reply history from email body.
+ * Removes reply headers, deeply nested quotes, and dividers.
+ * Keeps only the new content from the sender.
+ */
+export function stripQuotedHistory(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+
+  const replyHeaderPatterns = [
+    /^发件人[:：]/,
+    /^发件时间[:：]/,
+    /^收件人[:：]/,
+    /^抄送[:：]/,
+    /^主题[:：]/,
+    /^From[:：]/i,
+    /^Sent[:：]/i,
+    /^To[:：]/i,
+    /^Cc[:：]/i,
+    /^Subject[:：]/i,
+  ];
+
+  const dividerPatterns = [
+    /^[-=_~\*]{3,}\s*$/,
+    /^[_~\*]{8,}\s*$/,
+  ];
+
+  const englishOnPattern = /^On\s+.*wrote[:.]?$/i;
+  const quotedLinePattern = /^>+?\s*\S/;
+
+  let foundReply = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    const trimmed = line.trim();
+
+    if (foundReply) {
+      continue;
+    }
+
+    let isReplyLine = false;
+
+    for (const pattern of replyHeaderPatterns) {
+      if (pattern.test(trimmed)) {
+        isReplyLine = true;
+        break;
+      }
+    }
+
+    if (isReplyLine) {
+      foundReply = true;
+      continue;
+    }
+
+    for (const pattern of dividerPatterns) {
+      if (pattern.test(trimmed)) {
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1];
+          if (!nextLine) continue;
+          const nextTrimmed = nextLine.trim();
+          let nextIsHeader = false;
+          for (const headerPattern of replyHeaderPatterns) {
+            if (headerPattern.test(nextTrimmed)) {
+              nextIsHeader = true;
+              break;
+            }
+          }
+          if (nextIsHeader) {
+            foundReply = true;
+            continue;
+          }
+        }
+      }
+    }
+
+    if (englishOnPattern.test(trimmed)) {
+      foundReply = true;
+      continue;
+    }
+
+    if (quotedLinePattern.test(trimmed)) {
+      const match = trimmed.match(/^>+/);
+      if (match && match[0]) {
+        const quoteDepth = match[0].length;
+        if (quoteDepth >= 2) {
+          foundReply = true;
+          continue;
+        }
+      }
+    }
+
+    if (trimmed === '') {
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        if (!nextLine) continue;
+        const nextTrimmed = nextLine.trim();
+        let nextIsHeader = false;
+        for (const headerPattern of replyHeaderPatterns) {
+          if (headerPattern.test(nextTrimmed)) {
+            nextIsHeader = true;
+            break;
+          }
+        }
+        if (nextIsHeader) {
+          foundReply = true;
+          continue;
+        }
+      }
+    }
+
+    result.push(line);
+  }
+
+  let cleaned = result.join('\n').trim();
+
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+
+  cleaned = cleaned.replace(/^>\s*/gm, '');
+
+  return cleaned.trim();
+}
+
+/**
+ * Truncate text to a maximum length, showing head and tail.
+ * Used for fitting content within token limits.
+ */
+export function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  const half = Math.floor(maxLength / 2);
+  return text.substring(0, half) + ' ... [truncated] ... ' + text.substring(text.length - half);
+}
+
 export class EmailParser {
   async parseEmail(rawEmail: string | Buffer, emailId: string, uid: number): Promise<Email> {
     try {

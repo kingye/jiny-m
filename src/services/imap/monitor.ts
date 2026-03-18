@@ -24,7 +24,9 @@ export class EmailMonitor {
   private debug: boolean = false;
   private running: boolean = false;
   private lastUid: number | null = null;
-  
+  private reconnectAttempts: number = 0;
+  private lastSuccessfulPoll: number = 0;
+
   constructor(
     imapConfig: ImapConfig,
     watchConfig: WatchConfig,
@@ -45,32 +47,65 @@ export class EmailMonitor {
   
   async start(options: MonitorOptions): Promise<void> {
     this.running = true;
-    
+
     try {
-      // Load previous state
       await StateManager.load();
       const lastSeqNum = StateManager.getLastSequenceNumber();
       logger.info('Resuming from sequence number', { lastSeqNum });
-      
+
       await this.imapClient.connect();
-      
+
       const mailboxInfo = await this.imapClient.getNewestUid(this.folder);
       this.lastUid = mailboxInfo || lastSeqNum;
-      
+
       logger.info('Monitoring started', { folder: this.folder, lastUid: this.lastUid, lastSequenceNumber: lastSeqNum });
-      
+
       if (options.once) {
         await this.checkForNewEmails(options);
         return;
       }
-      
+
+      const reconnectConfig = this.watchConfig.reconnect || { maxAttempts: 10, baseDelay: 5000, maxDelay: 60000 };
+
       while (this.running) {
-        await this.checkForNewEmails(options);
-        
-        if (options.useIdle && this.imapClient.isConnected()) {
-          await this.idleWait();
-        } else {
-          await sleep(this.watchConfig.checkInterval * 1000);
+        try {
+          await this.checkForNewEmails(options);
+
+          if (this.reconnectAttempts > 0) {
+            logger.info('Connection restored', { reconnectAttempts: this.reconnectAttempts });
+            this.reconnectAttempts = 0;
+          }
+
+          this.lastSuccessfulPoll = Date.now();
+
+          if (options.useIdle && this.imapClient.isConnected()) {
+            await this.idleWait();
+          } else {
+            await sleep(this.watchConfig.checkInterval * 1000);
+          }
+        } catch (error) {
+          if (!this.running) break;
+
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error('Monitor error, will retry...', { error: errorMessage });
+
+          this.reconnectAttempts++;
+
+          if (this.reconnectAttempts >= reconnectConfig.maxAttempts) {
+            logger.error('Max reconnection attempts reached, stopping monitor', { reconnectAttempts: this.reconnectAttempts });
+            if (options.onError) {
+              options.onError(new Error(`Max reconnection attempts (${reconnectConfig.maxAttempts}) reached: ${errorMessage}`));
+            }
+            throw new Error(`Max reconnection attempts (${reconnectConfig.maxAttempts}) reached: ${errorMessage}`);
+          }
+
+          const delay = Math.min(
+            reconnectConfig.baseDelay * Math.pow(2, this.reconnectAttempts - 1),
+            reconnectConfig.maxDelay
+          );
+
+          logger.warn(`Waiting ${delay}ms before reconnection attempt ${this.reconnectAttempts}/${reconnectConfig.maxAttempts}...`);
+          await sleep(delay);
         }
       }
     } catch (error) {
@@ -93,31 +128,28 @@ export class EmailMonitor {
   
   private async checkForNewEmails(options: MonitorOptions): Promise<void> {
     if (!this.imapClient.isConnected()) {
-      logger.warn('Not connected to IMAP server');
-      return;
+      logger.warn('Not connected to IMAP server, attempting to reconnect...');
+      await this.imapClient.reconnect();
     }
-    
-    // Get the last sequence number from state
+
     const lastSeqNum = StateManager.getLastSequenceNumber();
-    
+
     try {
       const newMessages = await this.imapClient.searchNewMessages(lastSeqNum, this.folder);
-      
+
       if (newMessages.length === 0) {
         return;
       }
-      
+
       logger.info(`Found ${newMessages.length} new email(s)`, { lastSeqNum });
-      
+
       for (const message of newMessages) {
         await this.processMessage(message, message.seq, options);
-        
-        // Save state after processing each email
+
         StateManager.updateState(message.seq, message.uid);
         await StateManager.save();
       }
-      
-      // Update our tracking to latest message count
+
       const currentInfo = await this.imapClient.getNewestUid(this.folder);
       this.lastUid = currentInfo || lastSeqNum;
     } catch (error) {
@@ -126,6 +158,7 @@ export class EmailMonitor {
       if (options.onError) {
         options.onError(new Error(errorMessage));
       }
+      throw error;
     }
   }
   
@@ -216,8 +249,33 @@ export class EmailMonitor {
       logger.debug('IDLE wait interrupted');
     }
   }
-  
+
   isRunning(): boolean {
     return this.running;
+  }
+
+  /**
+   * Trigger an immediate check for new emails, bypassing the normal polling schedule.
+   * This is useful after a long-running operation (like AI processing) where the
+   * IMAP connection may have become stale.
+   */
+  async checkNow(): Promise<void> {
+    if (!this.running) {
+      logger.warn('Cannot check emails: monitor is not running');
+      return;
+    }
+
+    try {
+      logger.debug('Triggering immediate email check...');
+      await this.checkForNewEmails({
+        once: false,
+        useIdle: false,
+        verbose: this.verbose,
+        onError: undefined,
+      });
+      logger.debug('Immediate check complete');
+    } catch (error) {
+      logger.error('Failed to check emails immediately', { error: error instanceof Error ? error.message : 'Unknown error' });
+    }
   }
 }

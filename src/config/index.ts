@@ -70,6 +70,11 @@ export class ConfigManager {
     return this.getConfig().reply;
   }
   
+  getOpenCodeConfig() {
+    const reply = this.getReplyConfig();
+    return reply.mode === 'opencode' ? reply.opencode : undefined;
+  }
+  
   getPatterns() {
     return this.getConfig().patterns.filter(p => p.enabled !== false);
   }

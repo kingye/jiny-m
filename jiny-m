@@ -13,7 +13,7 @@ await mkdir(jinyDir, { recursive: true });
 
 program
   .name('jiny-m')
-  .description('Jiny-M Email Monitor CLI - Monitor your IMAP inbox and display matching emails')
+  .description('Jiny-M: Mail-Based AI Agent - Monitor emails and respond with AI')
   .version('1.0.0');
 
 program
