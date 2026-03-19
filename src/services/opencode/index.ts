@@ -562,6 +562,7 @@ export class OpenCodeService {
 
     // State for the event loop
     const accumulatedParts: Array<any> = [];
+    const toolLoggedStatus = new Map<string, string>(); // partId → last logged status (dedup tool logs)
     let replySentByTool = false;
     let lastActivityTime = Date.now();
     let lastProgressLog = Date.now();
@@ -651,11 +652,16 @@ export class OpenCodeService {
               accumulatedParts.push(part);
             }
 
-            // Log tool calls in real-time
+            // Log tool calls — only on new tool call or status change (dedup repeated updates)
             if (part.type === 'tool' && part.tool) {
               lastToolName = part.tool;
               const toolStatus = part.state?.status || 'unknown';
-              logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
+              const prevStatus = toolLoggedStatus.get(part.id);
+
+              if (prevStatus !== toolStatus) {
+                toolLoggedStatus.set(part.id, toolStatus);
+                logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
+              }
 
               // Detect reply_email tool usage in real-time
               if (part.tool.includes('reply_email') &&
