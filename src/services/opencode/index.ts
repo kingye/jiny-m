@@ -664,10 +664,24 @@ export class OpenCodeService {
               }
 
               // Detect reply_email tool usage in real-time
-              if (part.tool.includes('reply_email') &&
-                  (toolStatus === 'completed' || toolStatus === 'success')) {
-                replySentByTool = true;
-                logger.info('reply_email MCP tool completed (detected via SSE)');
+              if (part.tool.includes('reply_email')) {
+                if (toolStatus === 'completed') {
+                  // Check output for error indicators — OpenCode reports "completed"
+                  // even when the MCP tool returns isError: true
+                  const output = (part.state?.output || '').toString();
+                  if (output.toLowerCase().startsWith('error')) {
+                    logger.warn('reply_email tool completed with error output', {
+                      output: output.substring(0, 200),
+                    });
+                  } else {
+                    replySentByTool = true;
+                    logger.info('reply_email MCP tool completed successfully (detected via SSE)');
+                  }
+                } else if (toolStatus === 'error') {
+                  logger.warn('reply_email tool call failed', {
+                    error: part.state?.error,
+                  });
+                }
               }
             } else {
               // Clear tool name when AI moves on to non-tool parts
@@ -859,13 +873,26 @@ export class OpenCodeService {
           tool: toolId,
           status: partStatus,
           stateType: typeof part.state,
-          rawState: part.state,
         });
 
-        // Accept completed/success/done states, or if no state is present
-        // (some responses don't include state for successful tool calls)
-        if (!partStatus || partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
+        // "completed" status means the tool call finished, but NOT necessarily that it succeeded.
+        // OpenCode reports "completed" even when the MCP tool returns isError: true.
+        // Check the output field for error indicators.
+        if (partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
+          const output = (part.state?.output || '').toString();
+          if (output.toLowerCase().startsWith('error')) {
+            logger.warn('reply_email tool completed with error output', {
+              output: output.substring(0, 200),
+            });
+            continue; // Don't count this as a successful send
+          }
           logger.info('reply_email MCP tool was used successfully');
+          return true;
+        }
+
+        // Accept if no state is present (some responses don't include state)
+        if (!partStatus) {
+          logger.info('reply_email MCP tool detected (no state), assuming success');
           return true;
         }
 
