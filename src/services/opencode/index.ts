@@ -527,10 +527,13 @@ export class OpenCodeService {
     const PROGRESS_LOG_INTERVAL = 30_000; // Log progress every 30 seconds
     const sessionId = session.sessionId;
 
-    // Try SSE streaming approach first
+    // Try SSE streaming approach first — scope to thread directory so we receive
+    // events for sessions in this project context (per OpenCode server docs).
     let sseStream: AsyncGenerator<any> | null = null;
     try {
-      const subscription = await this.client.event.subscribe();
+      const subscription = await this.client.event.subscribe({
+        query: { directory: threadPath },
+      });
       sseStream = subscription.stream;
     } catch (error) {
       logger.warn('SSE subscription failed, falling back to blocking prompt()', {
@@ -564,6 +567,7 @@ export class OpenCodeService {
     let lastProgressLog = Date.now();
     let lastPartType = ''; // Track what the AI is doing (e.g. "reasoning", "text", "tool")
     let lastToolName = '';
+    let rawEventCount = 0;
     let done = false;
     let sessionError: any = null;
     const startTime = Date.now();
@@ -605,8 +609,25 @@ export class OpenCodeService {
         const properties = (event as any)?.properties;
         if (!eventType || !properties) continue;
 
+        // Diagnostic: log first few raw events to confirm SSE stream is delivering
+        rawEventCount++;
+        if (rawEventCount <= 5) {
+          const sid = properties.sessionID || properties.part?.sessionID;
+          logger.debug('SSE raw event', {
+            type: eventType,
+            sessionID: sid || 'none',
+            eventCount: rawEventCount,
+          });
+        }
+
+        // Handle stream-level events (not session-scoped)
+        if (eventType === 'server.connected') {
+          logger.debug('SSE stream connected to OpenCode server');
+          continue;
+        }
+
         // Filter events: only process events that positively match our session.
-        // Events without a sessionID (global events like server.connected, file.watcher.updated)
+        // Events without a sessionID (global events like file.watcher.updated)
         // must be skipped — otherwise they reset the activity timer without contributing parts.
         const eventSessionId = properties.sessionID || properties.part?.sessionID;
         if (!eventSessionId || eventSessionId !== sessionId) continue;
