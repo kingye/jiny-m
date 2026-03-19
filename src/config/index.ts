@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { validateConfig, expandEnvVars, ConfigValidationError } from './schemas';
 import type { Config } from '../types';
 import { DEFAULT_CONFIG_PATH, DEFAULT_WATCH_CONFIG, DEFAULT_OUTPUT_CONFIG } from '../utils/constants';
@@ -14,7 +14,9 @@ export class ConfigManager {
   
   async load(): Promise<Config> {
     try {
-      const filePath = join(process.cwd(), this.configPath);
+      const filePath = isAbsolute(this.configPath)
+        ? this.configPath
+        : join(process.cwd(), this.configPath);
       const fileContent = await readFile(filePath, 'utf-8');
       const rawConfig = JSON.parse(fileContent);
       const expandedConfig = expandEnvVars(rawConfig);

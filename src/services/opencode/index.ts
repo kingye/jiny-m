@@ -63,7 +63,8 @@ export class OpenCodeService {
       const existing = Bun.file(configPath);
       if (await existing.exists()) {
         const content = await existing.json();
-        if (content?.mcp?.['jiny_reply']?.command?.[2] === toolPath) {
+        if (content?.mcp?.['jiny_reply']?.command?.[2] === toolPath &&
+            content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd()) {
           return false; // Config already up to date
         }
       }
@@ -80,6 +81,7 @@ export class OpenCodeService {
         'jiny_reply': {
           type: 'local',
           command: ['bun', 'run', toolPath],
+          environment: { JINY_ROOT: process.cwd() },
           enabled: true,
           timeout: 60000,
         },
