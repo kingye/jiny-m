@@ -562,6 +562,8 @@ export class OpenCodeService {
     let replySentByTool = false;
     let lastActivityTime = Date.now();
     let lastProgressLog = Date.now();
+    let lastPartType = ''; // Track what the AI is doing (e.g. "reasoning", "text", "tool")
+    let lastToolName = '';
     let done = false;
     let sessionError: any = null;
     const startTime = Date.now();
@@ -574,10 +576,14 @@ export class OpenCodeService {
       // Throttled progress logging
       if (Date.now() - lastProgressLog >= PROGRESS_LOG_INTERVAL) {
         lastProgressLog = Date.now();
+        const activity = lastToolName
+          ? `tool: ${lastToolName}`
+          : lastPartType || 'waiting';
         logger.info('AI processing...', {
           elapsed: `${Math.round(elapsedMs / 1000)}s`,
           parts: accumulatedParts.length,
-          lastActivity: `${Math.round(silenceMs / 1000)}s ago`,
+          activity,
+          silence: `${Math.round(silenceMs / 1000)}s`,
         });
       }
 
@@ -599,17 +605,22 @@ export class OpenCodeService {
         const properties = (event as any)?.properties;
         if (!eventType || !properties) continue;
 
-        // Filter events for our session only
+        // Filter events: only process events that positively match our session.
+        // Events without a sessionID (global events like server.connected, file.watcher.updated)
+        // must be skipped — otherwise they reset the activity timer without contributing parts.
         const eventSessionId = properties.sessionID || properties.part?.sessionID;
-        if (eventSessionId && eventSessionId !== sessionId) continue;
+        if (!eventSessionId || eventSessionId !== sessionId) continue;
 
-        // Update activity timer on any relevant event
+        // Update activity timer — only reached for events from OUR session
         lastActivityTime = Date.now();
 
         switch (eventType) {
           case 'message.part.updated': {
             const part = properties.part;
             if (!part) break;
+
+            // Track what the AI is doing for progress logging
+            lastPartType = part.type || '';
 
             // Accumulate parts (deduplicate by ID — parts may be updated multiple times)
             const existingIdx = accumulatedParts.findIndex((p: any) => p.id === part.id);
@@ -621,6 +632,7 @@ export class OpenCodeService {
 
             // Log tool calls in real-time
             if (part.type === 'tool' && part.tool) {
+              lastToolName = part.tool;
               const toolStatus = part.state?.status || 'unknown';
               logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
 
@@ -630,6 +642,9 @@ export class OpenCodeService {
                 replySentByTool = true;
                 logger.info('reply_email MCP tool completed (detected via SSE)');
               }
+            } else {
+              // Clear tool name when AI moves on to non-tool parts
+              lastToolName = '';
             }
 
             // Log text deltas at debug level (too noisy for info)
