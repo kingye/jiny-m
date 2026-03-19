@@ -226,99 +226,20 @@ export class OpenCodeService {
     const modelConfig = this.getModelConfig();
     logger.debug('Using model config', { modelConfig });
 
-    const PROMPT_TIMEOUT = 300_000; // 5 minutes (agentic tasks may edit files + call tools)
+    // Use SSE streaming (promptAsync + event subscription) for progress visibility
+    // and activity-based timeout. Falls back to blocking prompt() if SSE fails.
+    const { parts: resultParts, replySentByTool } = await this.promptWithProgress(
+      session,
+      threadPath,
+      systemPrompt,
+      modelConfig,
+      prompt,
+    );
 
-    let result;
-    try {
-      result = await Promise.race([
-        this.client.session.prompt({
-          path: { id: session.sessionId },
-          query: { directory: threadPath },
-          body: {
-            system: systemPrompt,
-            model: modelConfig,
-            parts: [{ type: 'text', text: prompt }],
-          },
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('OpenCode prompt timed out after 5 minutes')), PROMPT_TIMEOUT)
-        ),
-      ]);
-    } catch (error) {
-      // On timeout (or other errors), check if the MCP tool already sent the reply
-      const isTimeout = error instanceof Error && error.message.includes('timed out');
-      if (isTimeout) {
-        logger.warn('Prompt timed out, checking if MCP tool already sent the reply...');
-        const sentByTool = await this.checkSignalFile(threadPath);
-        if (sentByTool) {
-          logger.info('MCP tool sent the reply before timeout was detected');
-          await this.updateSessionState(threadPath, session);
-          return {
-            text: '',
-            attachments: [],
-            replySentByTool: true,
-          };
-        }
-      }
-      throw error;
-    }
+    const aiReply = this.extractAiReply(resultParts as Array<any>);
+    aiReply.replySentByTool = replySentByTool || this.checkToolUsed(resultParts as Array<any>);
 
-    if (!result.data) {
-      throw new Error('Failed to get response from OpenCode');
-    }
-
-    logger.debug('Received response', { partsCount: result.data.parts?.length });
-
-    // Log raw parts for debugging tool call detection
-    if (result.data.parts) {
-      for (let i = 0; i < result.data.parts.length; i++) {
-        const part = result.data.parts[i] as any;
-        logger.debug(`Response part [${i}]`, {
-          type: part.type,
-          tool: part.tool,
-          toolName: part.toolName,
-          name: part.name,
-          state: part.state,
-          hasText: !!part.text,
-          textPreview: part.text ? part.text.substring(0, 100) : undefined,
-        });
-      }
-    }
-
-    if (!result.data.parts || result.data.parts.length === 0) {
-      const errorInfo = result.data.info?.error;
-      if ((errorInfo as any)?.name === 'ContextOverflowError') {
-        logger.warn('ContextOverflowError detected, creating new session and retrying...', {
-          sessionId: session.sessionId,
-          errorMessage: (errorInfo as any)?.data?.message || (errorInfo as any)?.message,
-        });
-
-        const sessionId = session.sessionId;
-        const newSession = await this.createNewSession(threadPath);
-
-        result = await this.client.session.prompt({
-          path: { id: newSession.sessionId },
-          query: { directory: threadPath },
-          body: {
-            system: systemPrompt,
-            model: modelConfig,
-            parts: [{ type: 'text', text: prompt }],
-          },
-        });
-      }
-    }
-
-    if (!result.data) {
-      throw new Error('Failed to get response from OpenCode after retry');
-    }
-
-    const aiReply = this.extractAiReply(result.data.parts as Array<any>);
-
-    // Check if the reply_email MCP tool was called successfully (from response parts)
-    aiReply.replySentByTool = this.checkToolUsed(result.data.parts as Array<any>);
-
-    // Fallback: check signal file written by the MCP reply tool
-    // (tool parts may not be included in prompt response in some cases)
+    // Last-resort fallback: check signal file (SSE may have missed tool call events)
     if (!aiReply.replySentByTool) {
       aiReply.replySentByTool = await this.checkSignalFile(threadPath);
     }
@@ -584,6 +505,280 @@ export class OpenCodeService {
     });
 
     return { text, attachments, replySentByTool: false };
+  }
+
+  /**
+   * Send a prompt using promptAsync() + SSE event streaming.
+   * Provides activity-based timeout (no fixed deadline — only times out if AI goes silent)
+   * and throttled progress logging.
+   *
+   * Falls back to blocking prompt() if SSE subscription fails.
+   */
+  private async promptWithProgress(
+    session: ThreadSession,
+    threadPath: string,
+    systemPrompt: string,
+    modelConfig: { providerID: string; modelID: string } | undefined,
+    prompt: string,
+  ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
+    if (!this.client) throw new Error('OpenCode client not initialized');
+
+    const ACTIVITY_TIMEOUT = 120_000;  // 2 minutes of silence → timeout
+    const PROGRESS_LOG_INTERVAL = 30_000; // Log progress every 30 seconds
+    const sessionId = session.sessionId;
+
+    // Try SSE streaming approach first
+    let sseStream: AsyncGenerator<any> | null = null;
+    try {
+      const subscription = await this.client.event.subscribe();
+      sseStream = subscription.stream;
+    } catch (error) {
+      logger.warn('SSE subscription failed, falling back to blocking prompt()', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return this.promptBlocking(session, threadPath, systemPrompt, modelConfig, prompt);
+    }
+
+    // Fire the prompt asynchronously (returns immediately with HTTP 204)
+    try {
+      await this.client.session.promptAsync({
+        path: { id: sessionId },
+        query: { directory: threadPath },
+        body: {
+          system: systemPrompt,
+          model: modelConfig,
+          parts: [{ type: 'text', text: prompt }],
+        },
+      });
+    } catch (error) {
+      logger.error('promptAsync failed', { error: error instanceof Error ? error.message : 'Unknown' });
+      throw error;
+    }
+
+    logger.info('Prompt sent (async), waiting for events...', { sessionId });
+
+    // State for the event loop
+    const accumulatedParts: Array<any> = [];
+    let replySentByTool = false;
+    let lastActivityTime = Date.now();
+    let lastProgressLog = Date.now();
+    let done = false;
+    let sessionError: any = null;
+    const startTime = Date.now();
+
+    // Activity timeout checker — runs in the background
+    const activityCheckInterval = setInterval(() => {
+      const silenceMs = Date.now() - lastActivityTime;
+      const elapsedMs = Date.now() - startTime;
+
+      // Throttled progress logging
+      if (Date.now() - lastProgressLog >= PROGRESS_LOG_INTERVAL) {
+        lastProgressLog = Date.now();
+        logger.info('AI processing...', {
+          elapsed: `${Math.round(elapsedMs / 1000)}s`,
+          parts: accumulatedParts.length,
+          lastActivity: `${Math.round(silenceMs / 1000)}s ago`,
+        });
+      }
+
+      if (silenceMs > ACTIVITY_TIMEOUT) {
+        logger.warn('Activity timeout: no events for 2 minutes', {
+          elapsed: `${Math.round(elapsedMs / 1000)}s`,
+          parts: accumulatedParts.length,
+        });
+        done = true;
+        sessionError = new Error(`No activity from OpenCode for ${Math.round(ACTIVITY_TIMEOUT / 1000)} seconds`);
+      }
+    }, 5000);
+
+    try {
+      for await (const event of sseStream) {
+        if (done) break;
+
+        const eventType = (event as any)?.type;
+        const properties = (event as any)?.properties;
+        if (!eventType || !properties) continue;
+
+        // Filter events for our session only
+        const eventSessionId = properties.sessionID || properties.part?.sessionID;
+        if (eventSessionId && eventSessionId !== sessionId) continue;
+
+        // Update activity timer on any relevant event
+        lastActivityTime = Date.now();
+
+        switch (eventType) {
+          case 'message.part.updated': {
+            const part = properties.part;
+            if (!part) break;
+
+            // Accumulate parts (deduplicate by ID — parts may be updated multiple times)
+            const existingIdx = accumulatedParts.findIndex((p: any) => p.id === part.id);
+            if (existingIdx >= 0) {
+              accumulatedParts[existingIdx] = part;
+            } else {
+              accumulatedParts.push(part);
+            }
+
+            // Log tool calls in real-time
+            if (part.type === 'tool' && part.tool) {
+              const toolStatus = part.state?.status || 'unknown';
+              logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
+
+              // Detect reply_email tool usage in real-time
+              if (part.tool.includes('reply_email') &&
+                  (toolStatus === 'completed' || toolStatus === 'success')) {
+                replySentByTool = true;
+                logger.info('reply_email MCP tool completed (detected via SSE)');
+              }
+            }
+
+            // Log text deltas at debug level (too noisy for info)
+            if (properties.delta && part.type === 'text') {
+              logger.debug('AI text delta', {
+                length: properties.delta.length,
+                preview: properties.delta.substring(0, 80),
+              });
+            }
+            break;
+          }
+
+          case 'session.status': {
+            const status = properties.status;
+            if (status?.type === 'busy') {
+              logger.debug('Session busy');
+            } else if (status?.type === 'retry') {
+              logger.warn('Session retrying', {
+                attempt: status.attempt,
+                message: status.message,
+              });
+            }
+            break;
+          }
+
+          case 'session.idle': {
+            const elapsedMs = Date.now() - startTime;
+            logger.info('AI session idle (prompt complete)', {
+              elapsed: `${Math.round(elapsedMs / 1000)}s`,
+              parts: accumulatedParts.length,
+            });
+            done = true;
+            break;
+          }
+
+          case 'session.error': {
+            const error = properties.error;
+            logger.error('Session error received via SSE', {
+              errorName: error?.name,
+              errorMessage: error?.data?.message || error?.message,
+            });
+
+            // Handle ContextOverflowError: create new session and retry
+            if (error?.name === 'ContextOverflowError') {
+              logger.warn('ContextOverflowError via SSE, will retry with new session');
+              sessionError = { name: 'ContextOverflowError', data: error.data };
+            } else {
+              sessionError = error;
+            }
+            done = true;
+            break;
+          }
+
+          default:
+            // Ignore other event types (file.edited, vcs.branch.updated, etc.)
+            break;
+        }
+
+        if (done) break;
+      }
+    } catch (error) {
+      // SSE stream error (disconnection, etc.)
+      logger.warn('SSE stream error', { error: error instanceof Error ? error.message : 'Unknown' });
+      // If we already have accumulated parts, use them
+      if (accumulatedParts.length === 0) {
+        // No data at all — check signal file as last resort
+        const sentByTool = await this.checkSignalFile(threadPath);
+        if (sentByTool) {
+          return { parts: [], replySentByTool: true };
+        }
+        throw error;
+      }
+    } finally {
+      clearInterval(activityCheckInterval);
+    }
+
+    // Handle ContextOverflowError: create new session and retry with blocking prompt
+    if (sessionError?.name === 'ContextOverflowError') {
+      logger.warn('Retrying with new session after ContextOverflowError');
+      const newSession = await this.createNewSession(threadPath);
+      return this.promptBlocking(newSession, threadPath, systemPrompt, modelConfig, prompt);
+    }
+
+    // Handle activity timeout
+    if (sessionError && !replySentByTool) {
+      // Check signal file before throwing — the tool may have sent the reply
+      const sentByTool = await this.checkSignalFile(threadPath);
+      if (sentByTool) {
+        return { parts: accumulatedParts, replySentByTool: true };
+      }
+      throw sessionError;
+    }
+
+    logger.debug('Accumulated parts from SSE', {
+      count: accumulatedParts.length,
+      types: accumulatedParts.map((p: any) => p.type),
+    });
+
+    return { parts: accumulatedParts, replySentByTool };
+  }
+
+  /**
+   * Blocking prompt fallback — used when SSE subscription fails or for ContextOverflow retry.
+   */
+  private async promptBlocking(
+    session: ThreadSession,
+    threadPath: string,
+    systemPrompt: string,
+    modelConfig: { providerID: string; modelID: string } | undefined,
+    prompt: string,
+  ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
+    if (!this.client) throw new Error('OpenCode client not initialized');
+
+    const PROMPT_TIMEOUT = 300_000; // 5 minutes
+
+    let result;
+    try {
+      result = await Promise.race([
+        this.client.session.prompt({
+          path: { id: session.sessionId },
+          query: { directory: threadPath },
+          body: {
+            system: systemPrompt,
+            model: modelConfig,
+            parts: [{ type: 'text', text: prompt }],
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('OpenCode prompt timed out (blocking fallback)')), PROMPT_TIMEOUT)
+        ),
+      ]);
+    } catch (error) {
+      const isTimeout = error instanceof Error && error.message.includes('timed out');
+      if (isTimeout) {
+        const sentByTool = await this.checkSignalFile(threadPath);
+        if (sentByTool) {
+          return { parts: [], replySentByTool: true };
+        }
+      }
+      throw error;
+    }
+
+    if (!result || !result.data) {
+      throw new Error('Failed to get response from OpenCode (blocking fallback)');
+    }
+
+    const parts = (result.data.parts || []) as Array<any>;
+    const replySentByTool = this.checkToolUsed(parts);
+    return { parts, replySentByTool };
   }
 
   /**

@@ -66,7 +66,11 @@ session  session
 Build prompt with <reply_context> block
   (includes incomingFileName, NOT full body)
        ↓
-session.prompt(prompt + context)  [5-min timeout]
+promptWithProgress() via SSE streaming:
+  - Subscribe to events → promptAsync() → process events
+  - Detect tool calls in real-time via message.part.updated
+  - Activity-based timeout (2 min silence, not fixed deadline)
+  - Progress logged every 30s while AI is working
        ↓
 OpenCode calls reply_email MCP tool
        ↓
@@ -79,11 +83,12 @@ MCP Tool:
 Update session.json
        ↓
 Check replySentByTool:
-  1. checkToolUsed(parts) — from response parts
-  2. checkSignalFile() — from .jiny/reply-sent.flag (fallback)
+  1. Accumulated SSE parts → tool call detected in real-time
+  2. checkToolUsed(parts) — from accumulated parts
+  3. checkSignalFile() — from .jiny/reply-sent.flag (last-resort fallback)
        ↓
 (fallback: if tool not used, monitor sends SMTP directly)
-(on timeout: check signal file — if sent, treat as success)
+(on activity timeout: check signal file — if sent, treat as success)
 ```
 
 ### Thread Context Flow
@@ -228,8 +233,10 @@ A single shared OpenCode server handles all email threads. Each thread session o
 - **MCP tool per-thread** - `opencode.json` in each thread dir configures `jiny_reply` MCP server
 - **Per-session directory** - `query.directory` parameter tells OpenCode where to work
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
-- **Prompt timeout** - 5 minutes for agentic tasks (AI may edit files + call tools)
-- **Signal file detection** - On timeout, checks `.jiny/reply-sent.flag` before declaring failure
+- **Prompt timeout** - Activity-based: no fixed deadline, only times out if AI goes silent for 2 min
+- **SSE streaming** - `promptAsync()` + `event.subscribe()` for real-time progress and tool detection
+- **Fallback** - If SSE subscription fails, falls back to blocking `prompt()` with 5-min timeout
+- **Signal file detection** - Last-resort: checks `.jiny/reply-sent.flag` if SSE missed tool call events
 
 #### Server Lifecycle Flow
 
@@ -254,9 +261,19 @@ Create session with directory=threadPath
        ↓
 Build prompt with <reply_context> block
        ↓
-Generate AI reply [5-min timeout]
-  ↓ success → check replySentByTool
-  ↓ timeout → check signal file → if sent, treat as success
+promptWithProgress() (SSE streaming):
+  1. Subscribe to SSE events (client.event.subscribe())
+  2. Fire promptAsync() (returns immediately)
+  3. Process events:
+     - message.part.updated → accumulate parts, detect tool calls
+     - session.status (busy) → reset activity timer
+     - session.idle → done, collect result
+     - session.error → handle (e.g. ContextOverflow → new session + retry)
+  4. Activity-based timeout: 2 min of silence → timeout
+  5. Progress log every 30s while busy
+  6. On SSE failure → fallback to blocking prompt() with 5-min timeout
+       ↓
+Check replySentByTool (SSE parts → checkToolUsed → signal file fallback)
        ↓
 CLI exits → close()
 ```
@@ -582,12 +599,16 @@ When the `attachments` parameter is provided:
 
 | Scenario | What Happens |
 |----------|-------------|
-| OpenCode uses `reply_email` tool successfully | Monitor sees `replySentByTool: true` (via tool parts or signal file), skips its own SMTP/store |
-| OpenCode returns text without using tool | Monitor sees `replySentByTool: false`, sends reply via direct SMTP flow |
-| Prompt times out (5 min) | Monitor checks signal file — if MCP tool already sent, treats as success; otherwise throws error |
+| OpenCode uses `reply_email` tool successfully | Detected in real-time via SSE `message.part.updated` events; `replySentByTool: true`, skips SMTP/store |
+| OpenCode returns text without using tool | `session.idle` fires, accumulated parts have no tool call; monitor falls back to direct SMTP |
+| AI takes very long (10+ min) but keeps working | SSE events keep arriving → activity timer resets → no timeout; progress logged every 30s |
+| AI goes silent for 2 minutes | Activity timeout fires → checks signal file → if sent, success; otherwise error |
+| SSE subscription fails | Falls back to blocking `prompt()` with 5-min fixed timeout |
+| Prompt times out (blocking fallback) | Checks signal file — if MCP tool already sent, treats as success |
 | SMTP fails in tool | Tool returns error, monitor falls back to direct SMTP |
 | Attachment rejected (security) | Tool returns error with explanation |
 | OpenCode server dies between emails | Health check detects it, restarts server automatically |
+| ContextOverflowError | Detected via SSE `session.error` → creates new session → retries with blocking prompt |
 
 ### Signal File (`.jiny/reply-sent.flag`)
 
@@ -933,11 +954,12 @@ interface Config {
           - Get or create OpenCode session for thread
           - **Build prompt context** (strip quoted history + truncation via `buildPromptContext()`)
           - Embed `<reply_context>` block with `incomingFileName` pointer
-          - Send prompt to OpenCode [5-min timeout] (which has reply_email MCP tool)
+          - Send prompt via `promptWithProgress()` (SSE streaming with activity-based timeout)
+          - SSE events provide real-time progress logging + tool call detection
           - OpenCode calls reply_email tool → MCP tool reads .md for full body → sends SMTP + stores reply + writes signal file
-          - If tool was used (replySentByTool=true via parts or signal file): done
+          - If tool was used (detected via SSE events or signal file): done
           - If tool was NOT used: monitor falls back to direct SMTP send + store
-          - If prompt timed out: check signal file — if sent, treat as success
+          - If SSE fails: fallback to blocking prompt() with 5-min timeout
           - If response empty → skip sending, log warning
  6. Continue monitoring (IDLE or polling)
  7. On shutdown: close OpenCode server
