@@ -661,6 +661,19 @@ export class OpenCodeService {
               if (prevStatus !== toolStatus) {
                 toolLoggedStatus.set(part.id, toolStatus);
                 logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
+
+                // Log tool input when reply_email is first called (pending state has the AI's arguments)
+                if (part.tool.includes('reply_email') && toolStatus === 'pending' && part.state?.input) {
+                  const input = part.state.input;
+                  const contextStr = typeof input.context === 'string' ? input.context : JSON.stringify(input.context);
+                  logger.debug('reply_email tool input from AI', {
+                    messageLength: typeof input.message === 'string' ? input.message.length : 0,
+                    messagePreview: typeof input.message === 'string' ? input.message.substring(0, 100) : 'N/A',
+                    contextLength: contextStr?.length || 0,
+                    contextPreview: contextStr?.substring(0, 300) || 'N/A',
+                    attachments: input.attachments || [],
+                  });
+                }
               }
 
               // Detect reply_email tool usage in real-time

@@ -95,7 +95,11 @@ async function handleReplyEmail(
     log('INFO', 'Context validated', { to: emailContext.to, from: emailContext.from, subject: emailContext.subject });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown validation error';
-    log('ERROR', 'Context validation failed', { error: msg });
+    log('ERROR', 'Context validation failed', {
+      error: msg,
+      contextLength: contextJson?.length,
+      contextPreview: contextJson?.substring(0, 500),
+    });
     return {
       content: [{ type: 'text' as const, text: `Error: Context validation failed - ${msg}` }],
       isError: true,

@@ -79,12 +79,14 @@ export function deserializeAndValidateContext(contextJson: string): EmailReplyCo
 
   try {
     context = JSON.parse(contextJson);
-  } catch {
-    throw new Error('Invalid context JSON: failed to parse');
+  } catch (e) {
+    const preview = contextJson?.substring(0, 300) || '(empty)';
+    throw new Error(`Invalid context JSON: failed to parse. Preview: ${preview}`);
   }
 
   if (!context.threadName || !context.to || !context.from || !context.subject) {
-    throw new Error('Invalid context: missing required fields (threadName, to, from, subject)');
+    const missing = ['threadName', 'to', 'from', 'subject'].filter(f => !(context as any)[f]);
+    throw new Error(`Invalid context: missing required fields: ${missing.join(', ')}`);
   }
 
   return context;
