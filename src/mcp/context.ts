@@ -12,13 +12,24 @@ export interface EmailReplyContext {
   references?: string[];
   bodyText?: string;
   bodyHtml?: string;
+  /** Filename of the stored incoming email in .jiny/ (e.g. "2026-03-19_21-07-06_Jiny_xxx.md").
+   *  The MCP reply tool reads this file for the full quoted history. */
+  incomingFileName?: string;
   uid: number;
 }
 
 /**
- * Serialize an Email + threadName into a JSON string.
+ * Serialize an Email + threadName into a JSON string for the <reply_context> block.
+ *
+ * The bodyText is stripped and truncated — it's embedded in the AI prompt for display only.
+ * The full email body is NOT included here; instead incomingFileName points to the
+ * stored .jiny/*.md file that the MCP reply tool reads for quoted history.
  */
-export function serializeContext(email: Email, threadName: string): string {
+export function serializeContext(
+  email: Email,
+  threadName: string,
+  incomingFileName?: string,
+): string {
   const toAddress = email.headers['reply-to'] || email.from;
 
   let fromName = email.from || 'Unknown';
@@ -27,8 +38,7 @@ export function serializeContext(email: Email, threadName: string): string {
     fromName = parts[0]?.trim().replace(/['"]/g, '') || fromName;
   }
 
-  // Clean and truncate body fields for quoting purposes only.
-  // The full body is not needed -- just enough context for the quoted reply.
+  // Strip and truncate body for the AI prompt display only.
   const MAX_BODY_IN_CONTEXT = 500;
   let bodyText = email.body.text;
   if (bodyText) {
@@ -38,7 +48,6 @@ export function serializeContext(email: Email, threadName: string): string {
     }
   }
 
-  // Only include bodyHtml if no bodyText is available (fallback for quoting)
   let bodyHtml = !bodyText ? email.body.html : undefined;
   if (bodyHtml && bodyHtml.length > MAX_BODY_IN_CONTEXT) {
     bodyHtml = truncateText(bodyHtml, MAX_BODY_IN_CONTEXT);
@@ -55,6 +64,7 @@ export function serializeContext(email: Email, threadName: string): string {
     references: email.references,
     bodyText,
     bodyHtml,
+    incomingFileName,
     uid: email.uid,
   };
 
@@ -83,6 +93,10 @@ export function deserializeAndValidateContext(contextJson: string): EmailReplyCo
 /**
  * Reconstruct an Email object from an EmailReplyContext.
  * Used by the MCP tool to pass to SmtpService.replyToEmail().
+ *
+ * Note: body.text here is the stripped/truncated version from the context.
+ * The MCP reply tool should replace it with the full body read from
+ * .jiny/<incomingFileName> before calling replyToEmail().
  */
 export function contextToEmail(context: EmailReplyContext): Email {
   return {

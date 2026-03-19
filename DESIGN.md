@@ -49,8 +49,8 @@ New Email Arrives
        ↓
 Pattern Match
        ↓
-storage.store(email) → threadPath
-       ↓
+storage.store(email) → { threadPath, filePath }
+       ↓                  (filePath = .jiny/<incomingFileName>)
 Check session.json in threadPath
        ↓
    ┌───┴───┐
@@ -64,19 +64,26 @@ session  session
    └───┬───┘
        ↓
 Build prompt with <reply_context> block
+  (includes incomingFileName, NOT full body)
        ↓
-session.prompt(prompt + context)
+session.prompt(prompt + context)  [5-min timeout]
        ↓
 OpenCode calls reply_email MCP tool
        ↓
-MCP Tool: validate context hash
-        → compose threadPath from threadName
-        → SmtpService.replyToEmail()
-        → EmailStorage.storeReply()
+MCP Tool:
+  → Read .jiny/<incomingFileName> for full body
+  → SmtpService.replyToEmail() (quotes full history)
+  → EmailStorage.storeReply()
+  → Write .jiny/reply-sent.flag (signal file)
        ↓
 Update session.json
        ↓
+Check replySentByTool:
+  1. checkToolUsed(parts) — from response parts
+  2. checkSignalFile() — from .jiny/reply-sent.flag (fallback)
+       ↓
 (fallback: if tool not used, monitor sends SMTP directly)
+(on timeout: check signal file — if sent, treat as success)
 ```
 
 ### Thread Context Flow
@@ -104,9 +111,9 @@ To balance context depth with token limits, the agent uses a multi-layered appro
 
 1. **Thread Files (Durable)** - Last 5 markdown files stored in thread folder
    - Includes both received emails and AI auto-replies
-   - Files are limited to 400 chars each (1,000 chars total)
-   - Email files have quoted history stripped for cleanliness
-   - General files are included as-is (no stripping)
+   - Files store full body (including quoted history) as canonical record
+   - When loaded into prompt context, `stripQuotedHistory()` + truncation applied
+   - Files are limited to 400 chars each (1,000 chars total) in prompt
 
 2. **OpenCode Session (Ephemeral)** - Conversation memory maintained by OpenCode
    - Persists only while server instance is alive
@@ -137,9 +144,10 @@ MAX_TOTAL_PROMPT = 6000            // Total prompt to AI
 - Keep only the new content from the sender
 
 **Thread File Processing:**
-- Email files: Extract body only (between `## Name (time)` and `---`), then strip quoted history
+- Email files: Extract body only (between `## Name (time)` and `---`), then `stripQuotedHistory()` at prompt load time
 - Auto-reply files: Skipped (already visible in conversation history)
 - General files: Included as-is (useful for reference documents)
+- Method: `buildPromptContext()` (formerly `buildThreadContext()`)
 
 ### Types (`src/types/index.ts`)
 
@@ -158,7 +166,7 @@ interface OpenCodeConfig {
   model?: string;
   systemPrompt?: string;
   includeThreadHistory?: boolean;
-  contextSecret?: string;          // HMAC secret for reply context validation (supports ${ENV_VAR})
+  contextSecret?: string;          // Reserved for future HMAC context validation
 }
 
 interface AiGeneratedReply {
@@ -213,34 +221,42 @@ A single shared OpenCode server handles all email threads. Each thread session o
 ```
 
 #### Key Points:
-- **Single server** - Auto-started on first request, auto-finds free port from 5000
+- **Single server** - Auto-started on first request, auto-finds free port (49152+)
+- **Health check** - Before reusing server, `isServerAlive()` pings with 3s timeout; restarts if dead
+- **Startup timeout** - 15 seconds for `opencode serve` CLI to start (default SDK is 5s)
 - **Shared client** - One client instance for all sessions
-- **MCP tool registered once** - `jiny-reply` MCP server spawned at startup, stays alive for all emails
+- **MCP tool per-thread** - `opencode.json` in each thread dir configures `jiny_reply` MCP server
 - **Per-session directory** - `query.directory` parameter tells OpenCode where to work
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
-- **Simple lifecycle** - Server starts on first use, closes when CLI exits
+- **Prompt timeout** - 5 minutes for agentic tasks (AI may edit files + call tools)
+- **Signal file detection** - On timeout, checks `.jiny/reply-sent.flag` before declaring failure
 
 #### Server Lifecycle Flow
 
 ```
-First Email Arrives
+Email Arrives
        ↓
 ensureServerStarted()
        ↓
-Server not running?
+Server exists? → Yes → isServerAlive()? → Yes → Use existing
+       │                      │
+       No                    No (dead)
+       │                      │
+       ↓                      ↓
+Find free port            Close stale refs
+       ↓                      │
+Start OpenCode server     └──→ Restart
+  (timeout: 15s)
        ↓
-Yes → Find free port (5000+)
-     → Start OpenCode server
-     → Store server/client
-     → Register jiny-reply MCP tool (once)
-       ↓
-No → Use existing client
+Store server/client
        ↓
 Create session with directory=threadPath
        ↓
 Build prompt with <reply_context> block
        ↓
-Generate AI reply (OpenCode calls reply_email tool)
+Generate AI reply [5-min timeout]
+  ↓ success → check replySentByTool
+  ↓ timeout → check signal file → if sent, treat as success
        ↓
 CLI exits → close()
 ```
@@ -253,76 +269,101 @@ export class OpenCodeService {
   private server: { close: () => void } | null = null;
   private client: OpenCodeClient | null = null;
   private port: number | null = null;
-  private contextSecret: string;
   
   constructor(config: OpenCodeConfig) {
     this.config = config;
-    // Resolve from config (supports ${ENV_VAR}) or generate random
-    this.contextSecret = config.contextSecret || crypto.randomUUID();
   }
   
   private async ensureServerStarted(): Promise<void> {
-    if (this.server && this.client) return;
+    if (this.server && this.client) {
+      // Health check: verify server is still alive
+      if (await this.isServerAlive()) return;
+      // Dead — clean up and restart
+      try { this.server.close(); } catch {}
+      this.server = null; this.client = null; this.port = null;
+    }
     
     const port = await this.findFreePort();
     const result = await createOpencode({
       hostname: this.config.hostname || '127.0.0.1',
       port,
+      timeout: 15_000, // 15s — CLI can be slow to start
     });
     
     this.server = result.server;
     this.client = result.client;
     this.port = port;
+  }
 
-    // Register MCP reply tool once at startup
-    await this.client.mcp.add({
-      body: {
-        name: 'jiny-reply',
-        config: {
-          type: 'local',
-          command: ['bun', 'run', resolve('src/mcp/reply-tool.ts')],
-          environment: { JINY_CONTEXT_SECRET: this.contextSecret },
-          enabled: true,
-          timeout: 60000,
-        }
-      }
-    });
+  private async isServerAlive(): Promise<boolean> {
+    try {
+      await Promise.race([
+        this.client.session.list(),
+        new Promise((_, r) => setTimeout(() => r(new Error()), 3000)),
+      ]);
+      return true;
+    } catch { return false; }
   }
   
-  async generateReply(email: Email, threadPath: string): Promise<AiGeneratedReply> {
+  async generateReply(email: Email, threadPath: string, storedEmailFile?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
     
     const session = await this.getOrCreateSession(threadPath);
-    const prompt = await this.buildPrompt(email, threadPath);
+    const prompt = await this.buildPrompt(email, threadPath, storedEmailFile);
     
-    const result = await this.client.session.prompt({
-      path: { id: session.sessionId },
-      query: { directory: threadPath },
-      body: {
-        model: this.getModelConfig(),
-        parts: [{ type: 'text', text: prompt }],
-      },
-    });
+    let result;
+    try {
+      result = await Promise.race([
+        this.client.session.prompt({
+          path: { id: session.sessionId },
+          query: { directory: threadPath },
+          body: {
+            model: this.getModelConfig(),
+            parts: [{ type: 'text', text: prompt }],
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timed out')), 300_000) // 5 minutes
+        ),
+      ]);
+    } catch (error) {
+      // On timeout, check if MCP tool already sent the reply
+      if (error.message.includes('timed out')) {
+        if (await this.checkSignalFile(threadPath)) {
+          return { text: '', attachments: [], replySentByTool: true };
+        }
+      }
+      throw error;
+    }
     
     const aiReply = this.extractAiReply(result.data.parts);
-    // Check if reply_email tool was called successfully
     aiReply.replySentByTool = this.checkToolUsed(result.data.parts);
+    // Fallback: check signal file written by MCP tool
+    if (!aiReply.replySentByTool) {
+      aiReply.replySentByTool = await this.checkSignalFile(threadPath);
+    }
     return aiReply;
   }
 
-  private async buildPrompt(email: Email, threadPath: string): Promise<string> {
-    // ... thread context + incoming email (unchanged) ...
+  private async buildPrompt(email: Email, threadPath: string, storedEmailFile?: string): Promise<string> {
+    // ... thread context via buildPromptContext() + incoming email (stripped) ...
 
-    // Embed reply context for the MCP tool
+    // Embed reply context for the MCP tool (lean: metadata + incomingFileName only)
     const threadName = basename(threadPath);
-    const replyContext = serializeContext(email, threadName, this.contextSecret);
-    parts.push('');
+    const replyContext = serializeContext(email, threadName, storedEmailFile);
     parts.push('<reply_context>' + replyContext + '</reply_context>');
-    parts.push('');
-    parts.push('Use the reply_email tool to send your reply.');
-    parts.push('Pass the <reply_context> block content verbatim as the `context` parameter.');
 
     return parts.join('\n');
+  }
+
+  // Check signal file left by MCP tool (cross-process detection)
+  private async checkSignalFile(threadPath: string): Promise<boolean> {
+    const signalFile = join(threadPath, '.jiny', 'reply-sent.flag');
+    try {
+      await access(signalFile);
+      await unlink(signalFile); // Clean up
+      return true;
+    } catch { return false; }
   }
 }
 ```
@@ -351,14 +392,6 @@ If still empty → Log full response
 - Thread files still provide recent conversation context
 - Logs both old and new session IDs for debugging
 - Allows continued operation without manual intervention
-    if (this.server) {
-      this.server.close();
-      this.server = null;
-      this.client = null;
-    }
-  }
-}
-```
 
 ## MCP Reply Tool
 
@@ -396,7 +429,9 @@ The email context (recipient, subject, threading headers) is serialized as a JSO
 ```
 Monitor receives email
     ↓
-OpenCodeService.generateReply(email, threadPath)
+storage.store(email) → { filePath, threadPath }
+    ↓                     filePath = .jiny/<incomingFileName>
+OpenCodeService.generateReply(email, threadPath, incomingFileName)
     ↓
 ensureThreadOpencodeSetup(threadPath)
   → writes opencode.json in thread dir with:
@@ -419,9 +454,11 @@ MCP Server (stdio subprocess, cwd = thread dir):
   3. threadPath = process.cwd() (already the thread dir)
   4. Validate attachments via PathValidator (exclude .opencode/, .jiny/)
   5. Reconstruct Email object from context
-  6. SmtpService.replyToEmail(email, message, attachments)
-  7. EmailStorage.storeReply(threadPath, message, email)
-  8. Return success message
+  6. Read .jiny/<incomingFileName> → extract full body for quoted history
+  7. SmtpService.replyToEmail(emailWithFullBody, message, attachments)
+  8. EmailStorage.storeReply(threadPath, message, email)
+  9. Write .jiny/reply-sent.flag (signal file for cross-process detection)
+  10. Return success message
 ```
 
 ### MCP Process Model
@@ -468,16 +505,18 @@ interface EmailReplyContext {
   date: string;              // ISO date string
   messageId?: string;        // For In-Reply-To header
   references?: string[];     // For References header
-  bodyText?: string;         // Original body text (for quoting, cleaned + truncated)
+  bodyText?: string;         // Original body text (stripped + truncated, for AI display only)
   bodyHtml?: string;         // Original body HTML (fallback, only if no bodyText)
+  incomingFileName?: string; // Stored email filename in .jiny/ (e.g. "2026-03-19_xxx.md")
+                             // MCP tool reads this file for full quoted history
   uid: number;               // Email UID
 }
 ```
 
 **Serialization helpers:**
-- `serializeContext(email, threadName)` → JSON string
+- `serializeContext(email, threadName, incomingFileName?)` → JSON string
 - `deserializeAndValidateContext(json)` → validated `EmailReplyContext`
-- `contextToEmail(context)` → reconstructed `Email` object for `SmtpService.replyToEmail()`
+- `contextToEmail(context)` → reconstructed `Email` object (stripped body; MCP tool replaces with full body from file)
 
 ### Prompt Structure
 
@@ -543,14 +582,30 @@ When the `attachments` parameter is provided:
 
 | Scenario | What Happens |
 |----------|-------------|
-| OpenCode uses `reply_email` tool successfully | Monitor sees `replySentByTool: true`, skips its own SMTP/store |
-| OpenCode returns text without using tool | Monitor sees `replySentByTool: false`, sends reply via current direct SMTP flow |
+| OpenCode uses `reply_email` tool successfully | Monitor sees `replySentByTool: true` (via tool parts or signal file), skips its own SMTP/store |
+| OpenCode returns text without using tool | Monitor sees `replySentByTool: false`, sends reply via direct SMTP flow |
+| Prompt times out (5 min) | Monitor checks signal file — if MCP tool already sent, treats as success; otherwise throws error |
 | SMTP fails in tool | Tool returns error, monitor falls back to direct SMTP |
 | Attachment rejected (security) | Tool returns error with explanation |
+| OpenCode server dies between emails | Health check detects it, restarts server automatically |
+
+### Signal File (`.jiny/reply-sent.flag`)
+
+Cross-process detection mechanism for when the MCP tool sends the reply but tool parts are missing from the prompt response (or the prompt times out).
+
+**Format:** Single-line JSON
+```json
+{"sentAt":"2026-03-19T13:09:43Z","to":"user@example.com","messageId":"<123@smtp>","attachmentCount":1}
+```
+
+**Lifecycle:**
+1. Written by MCP reply-tool after successful SMTP send
+2. Read by `OpenCodeService.checkSignalFile()` as fallback detection
+3. Deleted immediately after detection to prevent stale signals
 
 ### MCP Tool Logging
 
-The MCP tool logs to `/tmp/jiny-mcp-reply-tool.log` (file-based, since stdout is reserved for MCP stdio protocol). Logs include:
+The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdout is reserved for MCP stdio protocol). Each thread gets its own log file. Logs include:
 - Tool startup (cwd, JINY_ROOT, pid)
 - Each handler step (context validation, config loading, path resolution, attachment validation, SMTP send, storage)
 - Errors with stack traces
@@ -565,7 +620,6 @@ src/mcp/
 
 ### Known Issues / TODO
 
-- Context hash validation (HMAC-SHA256) temporarily disabled for testing. Re-enable after confirming end-to-end flow works.
 - Model sometimes uses built-in tools (glob, read, task) before calling `jiny_reply_reply_email`. System prompt instructions mitigate this but model behavior varies.
 
 ## Email Command System
@@ -865,8 +919,8 @@ interface Config {
        - Track UID in processed set
        - Fetch full body and attachments
        - Parse email content
-       - **STAGE 1: Apply semantic cleaning** (remove quoted history, headers)
-       - Save email to disk (clean version: ~2KB instead of 900KB)
+       - **STAGE 1: Save full body** (no stripping, no truncation)
+       - Save email to disk (full body as canonical record)
        - **Extract commands** from email body (`/attach`, etc.)
        - If commands found:
          - Parse commands via CommandRegistry
@@ -875,15 +929,16 @@ interface Config {
          - Generate AI reply from cleaned body (commands stripped)
          - Send reply with attachments via SMTP
        - If no commands (normal OpenCode flow):
-         - Load last 5 thread context files (email/reply limit: 2)
-         - Get or create OpenCode session for thread
-         - **STAGE 3: Build context** (semantic + truncation)
-         - Embed `<reply_context>` block with HMAC-signed email context
-         - Send prompt to OpenCode (which has reply_email MCP tool)
-         - OpenCode calls reply_email tool → MCP tool sends SMTP + stores reply
-         - If tool was used (replySentByTool=true): done
-         - If tool was NOT used: monitor falls back to direct SMTP send + store
-         - If response empty → skip sending, log warning
+          - Load last 5 thread context files (email/reply limit: 2)
+          - Get or create OpenCode session for thread
+          - **Build prompt context** (strip quoted history + truncation via `buildPromptContext()`)
+          - Embed `<reply_context>` block with `incomingFileName` pointer
+          - Send prompt to OpenCode [5-min timeout] (which has reply_email MCP tool)
+          - OpenCode calls reply_email tool → MCP tool reads .md for full body → sends SMTP + stores reply + writes signal file
+          - If tool was used (replySentByTool=true via parts or signal file): done
+          - If tool was NOT used: monitor falls back to direct SMTP send + store
+          - If prompt timed out: check signal file — if sent, treat as success
+          - If response empty → skip sending, log warning
  6. Continue monitoring (IDLE or polling)
  7. On shutdown: close OpenCode server
 ```
@@ -953,12 +1008,16 @@ patterns:
 ```
 workspace/
 └── Test4/
-    ├── session.json              # AI session state
-    ├── .opencode/                # OpenCode working directory
-    │   └── opencode.json         # OpenCode config
-    ├── 2026-03-18_18-18-35_jiny_Test4.md
-    ├── 2026-03-18_18-19-01_auto-reply.md
-    └── README.md                 # General context file (any .md file)
+    ├── .jiny/                        # Mail history + state
+    │   ├── session.json              # AI session state
+    │   ├── reply-tool.log            # MCP tool log (per-thread)
+    │   ├── reply-sent.flag           # Signal file (transient, deleted after detection)
+    │   ├── 2026-03-18_18-18-35_jiny_Test4.md  # Incoming email (full body)
+    │   └── 2026-03-18_18-19-01_auto-reply.md  # AI reply
+    ├── .opencode/                    # OpenCode working directory
+    ├── opencode.json                 # Per-thread OpenCode config (MCP tool, permissions)
+    ├── opencode_skills.pptx          # Files used/generated by OpenCode
+    └── ...
 
 .jiny/
 ├── .state.json                   # Monitor state (seq, uid, migration version)
@@ -988,7 +1047,7 @@ workspace/
 
 ### Email Markdown Format
 
-**Note:** Email files are saved with semantic cleaning applied (quoted history removed).
+**Note:** Email files store the full body including quoted history (canonical record). Stripping is only applied when loading into AI prompt context.
 
 ```markdown
 ---
@@ -999,15 +1058,13 @@ matched_pattern: "support"
 
 ## User Name (10:15 AM)
 
-Email body content here (quoted history stripped at save time)
+Email body content here (full body including quoted history preserved)
 
 ---
 *📎 Attachments:*
   - screenshot.png (image/png, 245kb)
 ---
 ```
-
-**Storage Size:** ~2KB (vs 900KB+ before cleaning)
 
 ### AI Auto-Reply Format
 ```markdown
@@ -1024,7 +1081,7 @@ AI-generated reply content here...
 
 ### SMTP Reply Format
 
-**Note:** SMTP replies quote the cleaned version of the original email (semantic cleaning applied).
+**Note:** SMTP replies quote the full original email body (preserving thread history, standard email behavior).
 
 ```
 AI reply text here
@@ -1033,12 +1090,10 @@ AI reply text here
 ### Sender Name (10:15 AM)
 > Subject: Original subject
 >
-> > Cleaned email body
-> > (no deep quoted history)
+> > Full email body including quoted history
+> > (entire thread preserved for proper email threading)
 ---
 ```
-
-**Reply Size:** ~5KB (vs 1MB+ before cleaning)
 
 ### Email Filename Format
 
@@ -1121,48 +1176,55 @@ jiny-m config validate   Validate configuration
 - `opencode.json` per thread: `permission: { "*": "allow" }` prevents headless permission blocks
 - Dependency: `@modelcontextprotocol/sdk` for stdio transport
 - Fallback: if OpenCode doesn't call the tool, monitor sends reply via direct SMTP
-- MCP tool logs to `/tmp/jiny-mcp-reply-tool.log` (stdout reserved for MCP protocol)
+- MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (per-thread, stdout reserved for MCP protocol)
+- Signal file `.jiny/reply-sent.flag` for cross-process tool-usage detection (written by MCP tool, read/deleted by monitor)
 
-### Three-Stage Cleaning
-- **STAGE 1 (Save):** Semantic cleaning, no truncation - applied in storage.store()
-- **STAGE 2 (SMTP):** Semantic cleaning, no truncation - applied in smtp.quoteOriginalEmail()
-- **STAGE 3 (Context):** Semantic cleaning + truncation - applied in opencode.buildThreadContext()
+### Stripping Strategy
+
+`stripQuotedHistory()` is only applied at **AI prompt consumption time**, never at storage or SMTP output time.
+
+| Stage | Where | Strips? | Purpose |
+|-------|-------|---------|---------|
+| **Storage** (`.md` files) | `storage.store()` | **No** | Canonical record — full body preserved |
+| **AI Prompt Context** | `buildPromptContext()` | **Yes** | Keep AI focused on latest message |
+| **AI Prompt Body** | `buildPrompt()` | **Yes** | Incoming email body for AI |
+| **`<reply_context>`** | `serializeContext()` | **Yes** (bodyText only) | Lean context in prompt |
+| **SMTP Quoting** | `quoteOriginalEmail()` | **No** | Full thread history in reply |
+| **MCP Tool Quoting** | `reply-tool.ts` | **No** | Reads `.md` file for full body |
 
 ### Configuration
 - JSON config (`.jiny/config.json`) with environment variable interpolation (`${ENV_VAR}`)
-- `contextSecret` for MCP reply tool HMAC validation supports `${ENV_VAR}` syntax
+- `contextSecret` for future HMAC validation (supports `${ENV_VAR}` syntax)
 
 ### Context Optimization
 
 **Problem:** Email replies contain full conversation history in quoted blocks (900KB+), causing:
-- Massive storage waste (5 files × 900KB = 4.5MB per thread)
-- Slow I/O (reading large files)
-- Bloated SMTP replies (1MB+ with full quoted history)
-- Context overflow when loading thread files
+- Context overflow when loading thread files into AI prompt
+- Slow AI inference from excessive tokens
 
-**Solution: Three-Stage Cleaning Strategy**
+**Solution: Strip at Consumption Time, Not Storage Time**
 
-#### STAGE 1: Save Time (Storage)
-- Apply semantic cleaning when saving emails to disk
-- Remove: reply headers, deeply nested quotes (≥3 levels), dividers
-- Remove: English/chinese sender/time/footer metadata
-- Result: 900KB → ~2KB (99.8% reduction)
-- Apply to: All incoming emails before `storage.store()`
+Email files (`.md`) store the full body as canonical records. Stripping is only applied when building the AI prompt:
 
-#### STAGE 2: SMTP Reply Time
-- Apply semantic cleaning when quoting original email in reply
-- Quote the cleaned version (already no quoted history)
-- Result: 1MB reply → ~5KB (99.5% reduction)
-- Benefits: Faster delivery, cleaner reply threads
+#### Storage (Full Body)
+- Save complete email body including all quoted history
+- Enables proper SMTP quoting with full thread history
+- MCP tool reads these files for reply quoting
+- No data loss — the canonical record is always complete
 
-#### STAGE 3: OpenCode Context Time
-- Load already-cleaned thread files (no re-cleaning needed)
-- Apply semantic cleaning to incoming email body (already done at STAGE 1)
-- Apply truncation to fit token limits:
+#### AI Prompt (Stripped + Truncated)
+- `buildPromptContext()` reads `.md` files, applies `stripQuotedHistory()` + truncation
+- `buildPrompt()` strips incoming email body
+- `<reply_context>` contains only `incomingFileName` pointer (not full body)
+- Token budget enforcement:
   - Thread files: 400 chars per file, max 2,000 chars total
   - Incoming email: 2,000 chars max
-  - Total prompt: 6,000 chars (~1,500 tokens for GLM-4.7)
-- Result: Clean context within model limits
+  - Total prompt: 6,000 chars (~1,500 tokens)
+
+#### SMTP Reply (Full History)
+- `quoteOriginalEmail()` uses full email body (no stripping)
+- Direct SMTP path: uses original `Email` object from IMAP parser
+- MCP tool path: reads `.jiny/<incomingFileName>` for full body
 
 **Quote Stripping Rules (Semantic Cleaning):**
 - Remove reply headers: `发件人:`, `发件时间:`, `From:`, `Sent:`, `To:`, `Cc:`, `Subject:`
@@ -1180,21 +1242,8 @@ jiny-m config validate   Validate configuration
 **Code Organization:**
 - `stripQuotedHistory()` and `truncateText()` in `src/core/email-parser.ts`
 - `stripReplyPrefix()` in `src/utils/helpers.ts`
-- Shared functions used across storage, smtp, and opencode modules
-- No code duplication
-
-**Redundancy Elimination:**
-- Incoming email's quoted history covers older conversation
-- Clean files on disk remove 99% of redundant content
-- SMTP replies quote clean versions (no bloat)
-- Context uses cleaned files + 1-2 recent filtered emails
-- Prevents 5-10x duplication across storage, replies, and context
-
-**Backward Compatibility:**
-- Old unclean email files (pre-change) still load correctly
-- `stripQuotedHistory()` handles uncleaned input gracefully
-- No migration needed - old files age out naturally from context window
-- Old files can be reprocessed with `jiny-m workspace clean` (optional future feature)
+- Stripping called only in `buildPromptContext()` and `buildPrompt()` (AI prompt construction)
+- Storage and SMTP modules do NOT call stripping functions
 
 ## Security Considerations
 - Environment variables for credentials (never commit passwords)
@@ -1208,7 +1257,6 @@ jiny-m config validate   Validate configuration
 - **JINY_ROOT**: MCP tool uses env var for config path, cannot access arbitrary filesystem locations
 - **Attachment directory exclusion**: MCP tool rejects attachments from `.opencode/` and `.jiny/` directories
 - **Permission config**: `opencode.json` sets `permission: { "*": "allow" }` to prevent headless blocking; consider tightening for production
-- **TODO**: Re-enable HMAC-SHA256 context hash validation after end-to-end testing confirms tool works correctly
 
 ## Future Enhancements
 - Multiple IMAP account support
@@ -1220,4 +1268,3 @@ jiny-m config validate   Validate configuration
 - Thread context summarization for very long conversations
 - Real-time chat interface alongside email
 - Additional email commands (e.g., `/summarize`, `/forward`, `/schedule`)
-- `jiny-m workspace clean` to reprocess old unclean email files

@@ -16,6 +16,7 @@ export class StateManager {
   private static readonly UID_SET_FILE = '.processed-uids.txt';
   private static stateFilePath: string = '.jiny/.state.json';
   private static stateDir: string = '.jiny';
+  private static migrationDisabled: boolean = false;
   private static state: MonitorState = {
     lastSequenceNumber: 0,
     lastProcessedTimestamp: new Date().toISOString(),
@@ -33,6 +34,10 @@ export class StateManager {
 
   static async ensureInitialized(): Promise<void> {
     await StateManager.load();
+
+    if (StateManager.migrationDisabled) {
+      return;
+    }
 
     const currentVersion = StateManager.state.migrationVersion || 0;
 
@@ -272,7 +277,21 @@ export class StateManager {
   }
 
   static async skipMigrationForTests(): Promise<void> {
-    StateManager.state.migrationVersion = StateManager.CURRENT_MIGRATION_VERSION;
-    await StateManager.save();
+    StateManager.migrationDisabled = true;
+  }
+
+  /**
+   * Restore StateManager to production defaults after tests.
+   * Call in afterEach to prevent test state from leaking.
+   */
+  static restoreAfterTests(): void {
+    StateManager.migrationDisabled = false;
+    StateManager.stateFilePath = '.jiny/.state.json';
+    StateManager.stateDir = '.jiny';
+    StateManager.state = {
+      lastSequenceNumber: 0,
+      lastProcessedTimestamp: new Date().toISOString(),
+      lastProcessedUid: 0,
+    };
   }
 }

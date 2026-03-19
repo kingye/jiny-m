@@ -3,7 +3,6 @@ import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
 import TurndownService from 'turndown';
-import { stripQuotedHistory } from '../../core/email-parser';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -198,22 +197,22 @@ export class SmtpService {
       fromName = parts[0]?.trim().replace(/['"]/g, '') || fromName;
     }
 
-    // Chat-style quoted message
+    // Chat-style quoted message header
     lines.push('---');
     lines.push(`### ${fromName} (${timeStr})`);
     lines.push('> ' + email.subject);
     lines.push('');
 
+    // Use the full email body including quoted history so the entire
+    // thread is preserved in the outgoing reply (standard email behaviour).
     if (email.body.text) {
-      const cleanedBody = stripQuotedHistory(email.body.text);
-      const quotedBody = cleanedBody
+      const quotedBody = email.body.text
         .split('\n')
         .map((line: string) => `> ${line}`)
         .join('\n');
       lines.push(quotedBody);
     } else if (email.body.html) {
-      const cleanedHtml = stripQuotedHistory(turndownService.turndown(email.body.html));
-      const quotedBody = cleanedHtml
+      const quotedBody = turndownService.turndown(email.body.html)
         .split('\n')
         .map((line: string) => `> ${line}`)
         .join('\n');

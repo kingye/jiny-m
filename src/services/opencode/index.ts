@@ -1,5 +1,5 @@
 import { join, basename, resolve } from 'node:path';
-import { readdir, readFile as fsReadFile, mkdir } from 'node:fs/promises';
+import { readdir, readFile as fsReadFile, mkdir, unlink, access } from 'node:fs/promises';
 import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
 import type { OpenCodeConfig, ThreadSession, Email, AiGeneratedReply, GeneratedFile } from '../../types';
 import { logger } from '../../core/logger';
@@ -27,8 +27,18 @@ export class OpenCodeService {
   }
 
   private async ensureServerStarted(): Promise<void> {
+    // If we already have a server and client, verify the server is still alive
     if (this.server && this.client) {
-      return;
+      const alive = await this.isServerAlive();
+      if (alive) {
+        return;
+      }
+      // Server died — clean up stale references and restart
+      logger.warn('OpenCode server is no longer responsive, restarting...', { port: this.port });
+      try { this.server.close(); } catch { /* already dead */ }
+      this.server = null;
+      this.client = null;
+      this.port = null;
     }
 
     const port = await this.findFreePort();
@@ -36,6 +46,7 @@ export class OpenCodeService {
     const result = await createOpencode({
       hostname: this.config.hostname || '127.0.0.1',
       port,
+      timeout: 15_000, // 15 seconds — opencode CLI can be slow to start
     });
 
     this.server = result.server;
@@ -43,6 +54,24 @@ export class OpenCodeService {
     this.port = port;
 
     logger.info('OpenCode server started', { port });
+  }
+
+  /**
+   * Quick health check — try a lightweight API call to see if the server is alive.
+   */
+  private async isServerAlive(): Promise<boolean> {
+    if (!this.client) return false;
+    try {
+      const result = await Promise.race([
+        this.client.session.list(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Health check timed out')), 3000)
+        ),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -155,7 +184,7 @@ export class OpenCodeService {
     });
   }
 
-  async generateReply(email: Email, threadPath: string): Promise<AiGeneratedReply> {
+  async generateReply(email: Email, threadPath: string, storedEmailFile?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
 
     if (!this.client) {
@@ -178,7 +207,7 @@ export class OpenCodeService {
     }
 
     const systemPrompt = this.buildSystemPrompt(threadPath);
-    const prompt = await this.buildPrompt(email, threadPath);
+    const prompt = await this.buildPrompt(email, threadPath, storedEmailFile);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });
 
@@ -197,22 +226,42 @@ export class OpenCodeService {
     const modelConfig = this.getModelConfig();
     logger.debug('Using model config', { modelConfig });
 
-    const PROMPT_TIMEOUT = 120_000; // 2 minutes
+    const PROMPT_TIMEOUT = 300_000; // 5 minutes (agentic tasks may edit files + call tools)
 
-    let result = await Promise.race([
-      this.client.session.prompt({
-        path: { id: session.sessionId },
-        query: { directory: threadPath },
-        body: {
-          system: systemPrompt,
-          model: modelConfig,
-          parts: [{ type: 'text', text: prompt }],
-        },
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('OpenCode prompt timed out after 2 minutes')), PROMPT_TIMEOUT)
-      ),
-    ]);
+    let result;
+    try {
+      result = await Promise.race([
+        this.client.session.prompt({
+          path: { id: session.sessionId },
+          query: { directory: threadPath },
+          body: {
+            system: systemPrompt,
+            model: modelConfig,
+            parts: [{ type: 'text', text: prompt }],
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('OpenCode prompt timed out after 5 minutes')), PROMPT_TIMEOUT)
+        ),
+      ]);
+    } catch (error) {
+      // On timeout (or other errors), check if the MCP tool already sent the reply
+      const isTimeout = error instanceof Error && error.message.includes('timed out');
+      if (isTimeout) {
+        logger.warn('Prompt timed out, checking if MCP tool already sent the reply...');
+        const sentByTool = await this.checkSignalFile(threadPath);
+        if (sentByTool) {
+          logger.info('MCP tool sent the reply before timeout was detected');
+          await this.updateSessionState(threadPath, session);
+          return {
+            text: '',
+            attachments: [],
+            replySentByTool: true,
+          };
+        }
+      }
+      throw error;
+    }
 
     if (!result.data) {
       throw new Error('Failed to get response from OpenCode');
@@ -265,8 +314,14 @@ export class OpenCodeService {
 
     const aiReply = this.extractAiReply(result.data.parts as Array<any>);
 
-    // Check if the reply_email MCP tool was called successfully
+    // Check if the reply_email MCP tool was called successfully (from response parts)
     aiReply.replySentByTool = this.checkToolUsed(result.data.parts as Array<any>);
+
+    // Fallback: check signal file written by the MCP reply tool
+    // (tool parts may not be included in prompt response in some cases)
+    if (!aiReply.replySentByTool) {
+      aiReply.replySentByTool = await this.checkSignalFile(threadPath);
+    }
 
     await this.updateSessionState(threadPath, session);
 
@@ -340,7 +395,7 @@ export class OpenCodeService {
             path: { id: session.sessionId }
           });
 
-          if (!result.data) {
+    if (!result || !result.data) {
             logger.warn('Session no longer exists, creating new one', { sessionId: session.sessionId });
             return this.createNewSession(threadPath);
           }
@@ -393,12 +448,12 @@ export class OpenCodeService {
     return parts.join('\n');
   }
 
-  private async buildPrompt(email: Email, threadPath: string): Promise<string> {
+  private async buildPrompt(email: Email, threadPath: string, storedEmailFile?: string): Promise<string> {
     const parts: string[] = [];
     const threadName = basename(threadPath);
 
     if (this.config.includeThreadHistory !== false) {
-      const threadContext = await this.buildThreadContext(threadPath);
+      const threadContext = await this.buildPromptContext(threadPath);
       if (threadContext) {
         parts.push('## Conversation history (most recent messages):');
         parts.push(threadContext);
@@ -438,7 +493,7 @@ export class OpenCodeService {
     }
 
     // Append reply context (AFTER truncation so it is never cut)
-    const replyContext = serializeContext(email, threadName);
+    const replyContext = serializeContext(email, threadName, storedEmailFile);
     const contextBlock = '\n\n<reply_context>' + replyContext + '</reply_context>';
 
     const prompt = conversationPrompt + contextBlock;
@@ -452,7 +507,7 @@ export class OpenCodeService {
     return prompt;
   }
 
-  private async buildThreadContext(threadPath: string): Promise<string> {
+  private async buildPromptContext(threadPath: string): Promise<string> {
     try {
       const stateDir = join(threadPath, '.jiny');
       const entries = await readdir(stateDir, { withFileTypes: true });
@@ -483,14 +538,18 @@ export class OpenCodeService {
           }
 
           const trimmedContent = trimEmailReplyContent(fileName, fileContent);
-          totalLength += trimmedContent.length;
+
+          // Strip quoted history for the AI prompt — .md files now store the full body
+          // but the AI only needs the latest message from each email.
+          const strippedContent = stripQuotedHistory(trimmedContent);
+          totalLength += strippedContent.length;
 
           if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(trimmedContent);
+            contextParts.push(strippedContent);
             break;
           }
 
-          contextParts.push(trimmedContent);
+          contextParts.push(strippedContent);
         } catch (error) {
           logger.debug(`Failed to read file: ${fileName}`, {
             error: error instanceof Error ? error.message : 'Unknown',
@@ -530,40 +589,85 @@ export class OpenCodeService {
   /**
    * Check if the reply_email MCP tool was called and completed successfully.
    * Inspects all parts for tool-related entries referencing reply_email.
+   *
+   * OpenCode SDK ToolPart has: { type: "tool", tool: string, state: { status: "completed"|"running"|... } }
+   * The `state` field is a nested object with a `status` string, not a flat string.
    */
   private checkToolUsed(parts: Array<Record<string, any>>): boolean {
     if (!parts || parts.length === 0) return false;
 
     for (const part of parts) {
-      // Check all possible field names that might contain the tool identifier
+      const partType = (part.type || '').toString().toLowerCase();
+
+      // The tool identifier lives in part.tool (SDK ToolPart) or fallback fields
       const toolId = (
-        part.tool || part.toolName || part.name || part.id || ''
+        part.tool || part.toolName || part.name || ''
       ).toString().toLowerCase();
 
-      const partType = (part.type || '').toString().toLowerCase();
-      const partState = (part.state || part.status || '').toString().toLowerCase();
+      // State can be a nested object { status: "completed" } (SDK ToolPart)
+      // or a flat string (other formats). Handle both.
+      let partStatus = '';
+      if (part.state && typeof part.state === 'object' && part.state.status) {
+        partStatus = String(part.state.status).toLowerCase();
+      } else if (typeof part.state === 'string') {
+        partStatus = part.state.toLowerCase();
+      } else if (typeof part.status === 'string') {
+        partStatus = part.status.toLowerCase();
+      }
 
       // Match any part that references reply_email
       if (toolId.includes('reply_email') || (partType === 'tool' && toolId.includes('reply'))) {
         logger.info('reply_email tool part detected', {
           type: partType,
           tool: toolId,
-          state: partState,
+          status: partStatus,
+          stateType: typeof part.state,
+          rawState: part.state,
         });
 
         // Accept completed/success/done states, or if no state is present
         // (some responses don't include state for successful tool calls)
-        if (!partState || partState === 'completed' || partState === 'success' || partState === 'done') {
+        if (!partStatus || partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
           logger.info('reply_email MCP tool was used successfully');
           return true;
         }
 
         // If state indicates failure, log and continue checking other parts
-        logger.warn('reply_email tool call detected but state indicates failure', { state: partState });
+        logger.warn('reply_email tool call detected but state indicates failure', { status: partStatus });
       }
     }
 
     return false;
+  }
+
+  /**
+   * Check if the MCP reply tool left a signal file indicating it sent the reply.
+   * This is a reliable fallback when tool parts are not included in the prompt response.
+   * The signal file is cleaned up after detection.
+   */
+  private async checkSignalFile(threadPath: string): Promise<boolean> {
+    const signalFile = join(threadPath, '.jiny', 'reply-sent.flag');
+    try {
+      await access(signalFile);
+      const content = await fsReadFile(signalFile, 'utf-8');
+      logger.info('Signal file detected: MCP reply tool sent the email', {
+        signalFile,
+        content: content.substring(0, 200),
+      });
+
+      // Clean up signal file
+      try {
+        await unlink(signalFile);
+        logger.debug('Signal file cleaned up', { signalFile });
+      } catch {
+        // Non-fatal
+      }
+
+      return true;
+    } catch {
+      // No signal file — tool didn't send (or file was already cleaned up)
+      return false;
+    }
   }
 
   private getModelConfig(): { providerID: string; modelID: string } | undefined {

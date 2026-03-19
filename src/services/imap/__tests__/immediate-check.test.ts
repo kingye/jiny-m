@@ -9,7 +9,6 @@ import type { ImapConfig, WatchConfig, Pattern, OutputConfig } from '../../../ty
 describe('EmailMonitor Sequence-Based Testing', () => {
   let processedEmailCount: number = 0;
   let fetchCallCount: number = 0;
-  let originalStateFilePath: string;
   let tempTestDir: string;
 
   const testImapConfig: ImapConfig = {
@@ -80,14 +79,13 @@ Test body content`;
     processedEmailCount = 0;
     fetchCallCount = 0;
     tempTestDir = join(tmpdir(), `.jiny-test-${Date.now()}`);
-    originalStateFilePath = '.jiny/.state.json';
     StateManager.setStateFilePath(join(tempTestDir, '.state.json'));
     await StateManager.skipMigrationForTests();
   });
 
   afterEach(async () => {
     await rm(tempTestDir, { recursive: true, force: true }).catch(() => {});
-    StateManager.setStateFilePath(originalStateFilePath);
+    StateManager.restoreAfterTests();
   });
 
   test('should process emails using fetchRange in normal mode', async () => {

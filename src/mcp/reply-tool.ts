@@ -13,8 +13,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { join, normalize } from 'node:path';
-import { stat } from 'node:fs/promises';
-import { appendFileSync } from 'node:fs';
+import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { appendFileSync, mkdirSync } from 'node:fs';
 
 import { deserializeAndValidateContext, contextToEmail } from './context';
 import { ConfigManager } from '../config';
@@ -24,8 +24,20 @@ import { PathValidator } from '../core/security';
 
 const EXCLUDED_DIRS = ['.opencode', '.jiny'];
 
-// File-based logging since stdout is used for MCP protocol
-const LOG_FILE = '/tmp/jiny-mcp-reply-tool.log';
+// File-based logging since stdout is used for MCP protocol.
+// Log into the thread's .jiny directory (cwd is set to the thread dir by OpenCode).
+let LOG_FILE = '/tmp/jiny-mcp-reply-tool.log'; // fallback until cwd is confirmed
+function initLogFile() {
+  try {
+    const jinyDir = join(process.cwd(), '.jiny');
+    mkdirSync(jinyDir, { recursive: true });
+    LOG_FILE = join(jinyDir, 'reply-tool.log');
+  } catch {
+    // keep fallback
+  }
+}
+initLogFile();
+
 function log(level: string, msg: string, data?: Record<string, unknown>) {
   const line = `[${new Date().toISOString()}] [${level}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}\n`;
   try {
@@ -198,7 +210,35 @@ async function handleReplyEmail(
   // 6. Reconstruct Email object from context
   const email = contextToEmail(emailContext);
 
-  // 7. Send reply via SmtpService (reuses quoteOriginalEmail, threading headers, HTML conversion)
+  // 7. Load full email body from stored .md file for quoted history in the reply.
+  //    The context only carries stripped/truncated bodyText for the AI prompt.
+  //    The .jiny/<incomingFileName> file has the full body including quoted history.
+  if (emailContext.incomingFileName) {
+    try {
+      const mdPath = join(threadPath, '.jiny', emailContext.incomingFileName);
+      const mdContent = await readFile(mdPath, 'utf-8');
+      const fullBody = extractBodyFromMd(mdContent);
+      if (fullBody) {
+        email.body.text = fullBody;
+        log('INFO', 'Loaded full body from stored email file', {
+          file: emailContext.incomingFileName,
+          bodyLength: fullBody.length,
+        });
+      } else {
+        log('WARN', 'Could not extract body from stored email file, using context bodyText', {
+          file: emailContext.incomingFileName,
+        });
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      log('WARN', 'Failed to read stored email file, using context bodyText as fallback', {
+        file: emailContext.incomingFileName,
+        error: msg,
+      });
+    }
+  }
+
+  // 8. Send reply via SmtpService (reuses quoteOriginalEmail, threading headers, HTML conversion)
   log('INFO', 'Sending reply via SMTP', {
     to: emailContext.to,
     subject: emailContext.subject,
@@ -241,7 +281,28 @@ async function handleReplyEmail(
     });
   }
 
-  // 9. Return success
+  // 9. Write signal file so the monitor knows the MCP tool sent the reply
+  //    (fallback detection in case tool parts are not returned in prompt response)
+  try {
+    const jinyDir = join(threadPath, '.jiny');
+    await mkdir(jinyDir, { recursive: true });
+    const signalFile = join(jinyDir, 'reply-sent.flag');
+    const signalData = JSON.stringify({
+      sentAt: new Date().toISOString(),
+      to: emailContext.to,
+      messageId: sentMessageId,
+      attachmentCount: validatedAttachments.length,
+    });
+    await writeFile(signalFile, signalData, 'utf-8');
+    log('INFO', 'Signal file written', { signalFile });
+  } catch (error) {
+    // Non-fatal: the reply was already sent
+    log('WARN', 'Failed to write signal file', {
+      error: error instanceof Error ? error.message : 'Unknown',
+    });
+  }
+
+  // 10. Return success
   log('INFO', 'reply_email completed successfully', {
     sentTo: emailContext.to,
     attachmentCount: validatedAttachments.length,
@@ -254,6 +315,70 @@ async function handleReplyEmail(
         (validatedAttachments.length > 0 ? ` with ${validatedAttachments.length} attachment(s): ${validatedAttachments.map(a => a.filename).join(', ')}` : ''),
     }],
   };
+}
+
+/**
+ * Extract the email body content from a stored .jiny/*.md file.
+ *
+ * The .md format is:
+ *   ---
+ *   uid: ...
+ *   message_id: "..."
+ *   ---
+ *
+ *   ## SenderName (HH:MM PM)
+ *
+ *   <body content here, including full quoted history>
+ *
+ *   ---
+ *
+ * Returns the body content between the sender header and the trailing "---",
+ * or null if parsing fails.
+ */
+function extractBodyFromMd(mdContent: string): string | null {
+  const lines = mdContent.split('\n');
+  let inFrontmatter = false;
+  let pastFrontmatter = false;
+  let foundHeader = false;
+  const bodyLines: string[] = [];
+
+  for (const line of lines) {
+    // Skip YAML frontmatter
+    if (!pastFrontmatter) {
+      if (line.trimEnd() === '---') {
+        if (inFrontmatter) {
+          pastFrontmatter = true;
+          inFrontmatter = false;
+        } else {
+          inFrontmatter = true;
+        }
+      }
+      continue;
+    }
+
+    // Look for the ## SenderName (HH:MM) header
+    if (!foundHeader) {
+      if (line.startsWith('## ') && /\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(line)) {
+        foundHeader = true;
+      }
+      continue;
+    }
+
+    // Stop at the trailing "--- " or "---" separator
+    if (line.trimEnd() === '---' || line.trimEnd() === '--- ') {
+      break;
+    }
+
+    bodyLines.push(line);
+  }
+
+  if (!foundHeader || bodyLines.length === 0) {
+    return null;
+  }
+
+  // Trim leading/trailing blank lines but preserve internal whitespace
+  const body = bodyLines.join('\n').trim();
+  return body.length > 0 ? body : null;
 }
 
 function getContentType(ext: string): string {

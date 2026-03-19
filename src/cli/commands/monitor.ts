@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { EmailMonitor } from '../../services/imap/monitor';
 import type { GeneratedFile, AttachmentConfig, Email } from '../../types';
 import { ConfigManager } from '../../config';
@@ -110,9 +110,11 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 
         // Store email as markdown in thread folder
         let threadPath: string | undefined;
+        let storedEmailFile: string | undefined;
         try {
           const result = await storage.store(email, patternMatch);
           threadPath = result.threadPath;
+          storedEmailFile = basename(result.filePath);
           logger.info('Email saved to workspace', { file: result.filePath, pattern: patternMatch.patternName });
         } catch (err) {
           logger.error('Failed to save email to workspace', { error: err instanceof Error ? err.message : 'Unknown error' });
@@ -129,7 +131,8 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
               storage,
               smtpService,
               options,
-              monitorInstance
+              monitorInstance,
+              storedEmailFile
             );
           } catch (err) {
             logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
@@ -162,7 +165,8 @@ async function handleAutoReply(
   storage: EmailStorage,
   smtpService: SmtpService,
   options: MonitorCommandOptions,
-  monitorInstance: any
+  monitorInstance: any,
+  storedEmailFile?: string
 ): Promise<void> {
   // Extract commands from email body
   const extractor = new EmailCommandExtractor();
@@ -223,7 +227,7 @@ async function handleAutoReply(
   if (replyConfig.mode === 'opencode' && opencodeService) {
     // Generate AI reply (OpenCode may use MCP reply_email tool to send directly)
     logger.info('Generating AI reply...', { to: email.from });
-    const aiReply = await opencodeService.generateReply(email, threadPath);
+    const aiReply = await opencodeService.generateReply(email, threadPath, storedEmailFile);
 
     // If the MCP reply_email tool was used, the reply was already sent and stored
     if (aiReply.replySentByTool) {

@@ -1,7 +1,7 @@
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import type { Email, WorkspaceConfig, PatternMatch } from '../../types';
-import { sanitizeForFilename, deriveThreadName, stripQuotedHistory } from '../../core/email-parser';
+import { sanitizeForFilename, deriveThreadName } from '../../core/email-parser';
 import { logger } from '../../core/logger';
 
 // @ts-ignore - turndown module import
@@ -62,9 +62,9 @@ function emailToMarkdown(email: Email): string {
     bodyContent = '[No content]';
   }
 
-  // Remove quoted reply history to keep files small
-  const cleanedBody = stripQuotedHistory(bodyContent);
-  lines.push(cleanedBody);
+  // Store full body content (including quoted history) as the canonical record.
+  // Stripping is only done at AI prompt consumption time, not at storage time.
+  lines.push(bodyContent);
   lines.push('');
 
   // Attachments
