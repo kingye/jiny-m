@@ -34,11 +34,27 @@ export class Logger {
   private formatMessage(level: LogLevel, message: string, meta?: any): string {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level}]`;
-    
+
     if (meta) {
-      return `${prefix} ${message} ${JSON.stringify(meta)}`;
+      let metaJson: string;
+      try {
+        // Convert Set to Array before stringifying
+        const safeMeta = meta instanceof Set
+          ? Array.from(meta)
+          : meta;
+        metaJson = JSON.stringify(safeMeta, (_key, value) => {
+          // Convert BigInt to number
+          if (typeof value === 'bigint') {
+            return Number(value);
+          }
+          return value;
+        });
+      } catch (error) {
+        metaJson = String(meta);
+      }
+      return `${prefix} ${message} ${metaJson}`;
     }
-    
+
     return `${prefix} ${message}`;
   }
   

@@ -1,5 +1,6 @@
 import type { ImapConfig, WatchConfig, Pattern, OutputConfig } from '../../types';
-import { ImapClient, type ImapEmail } from './index';
+import { ImapClient } from './index';
+import { type ImapEmail } from './index';
 import { PatternMatcher } from '../../core/pattern-matcher';
 import { emailParser } from '../../core/email-parser';
 import { logger } from '../../core/logger';
@@ -44,21 +45,22 @@ export class EmailMonitor {
     this.verbose = verbose;
     this.debug = debug;
   }
-  
+
   async start(options: MonitorOptions): Promise<void> {
     this.running = true;
 
     try {
+      await StateManager.ensureInitialized();
       await StateManager.load();
-      const lastSeqNum = StateManager.getLastSequenceNumber();
-      logger.info('Resuming from sequence number', { lastSeqNum });
+      const lastSeq = StateManager.getLastSequenceNumber();
+      logger.info('Resuming sequence-based monitoring', { lastSequenceNumber: lastSeq });
 
       await this.imapClient.connect();
 
-      const mailboxInfo = await this.imapClient.getNewestUid(this.folder);
-      this.lastUid = mailboxInfo || lastSeqNum;
+      const currentInfo = await this.imapClient.getNewestUid(this.folder);
+      this.lastUid = currentInfo || lastSeq;
 
-      logger.info('Monitoring started', { folder: this.folder, lastUid: this.lastUid, lastSequenceNumber: lastSeqNum });
+      logger.info('Monitoring started', { folder: this.folder, lastUid: this.lastUid });
 
       if (options.once) {
         await this.checkForNewEmails(options);
@@ -119,69 +121,159 @@ export class EmailMonitor {
       await this.stop();
     }
   }
-  
+
   async stop(): Promise<void> {
     this.running = false;
     await this.imapClient.disconnect();
     logger.info('Monitoring stopped');
   }
-  
+
   private async checkForNewEmails(options: MonitorOptions): Promise<void> {
     if (!this.imapClient.isConnected()) {
       logger.warn('Not connected to IMAP server, attempting to reconnect...');
       await this.imapClient.reconnect();
     }
 
-    const lastSeqNum = StateManager.getLastSequenceNumber();
+    const currentCount = await this.imapClient.getMailboxCount(this.folder);
+    const lastSeq = StateManager.getLastSequenceNumber();
+    const maxThreshold = this.watchConfig.maxNewEmailThreshold || 50;
+    const disableCheck = this.watchConfig.disableConsistencyCheck || false;
+
+    if (currentCount < lastSeq) {
+      logger.warn('Deletion detected, triggering recovery', {
+        lastSequenceNumber: lastSeq,
+        currentCount,
+      });
+      await this.triggerRecovery(currentCount, lastSeq, 'deletion', options);
+      return;
+    }
+
+    if (!disableCheck && currentCount > lastSeq + maxThreshold) {
+      logger.warn('Suspicious jump in email count, triggering recovery', {
+        lastSequenceNumber: lastSeq,
+        currentCount,
+        threshold: maxThreshold,
+      });
+      await this.triggerRecovery(currentCount, lastSeq, 'suspicious-jump', options);
+      return;
+    }
+
+    await this.normalFetchNewMessages(lastSeq, currentCount, options);
+  }
+
+  private async normalFetchNewMessages(
+    lastSeq: number,
+    currentCount: number,
+    options: MonitorOptions
+  ) {
+    if (currentCount <= lastSeq) {
+      logger.debug('No new messages', { lastSeq, currentCount });
+      return;
+    }
+
+    logger.debug('Normal mode: fetching new messages', {
+      from: lastSeq + 1,
+      to: currentCount,
+    });
+
+    const newMessages = await this.imapClient.fetchRange(lastSeq + 1, currentCount, this.folder);
+
+    if (newMessages.length === 0) {
+      return;
+    }
+
+    logger.info(`Found ${newMessages.length} new email(s)`);
+
+    for (const message of newMessages) {
+      await this.processMessage(message, message.seq, options);
+      StateManager.updateSequence(message.seq);
+      await StateManager.save();
+    }
+
+    const currentInfo = await this.imapClient.getNewestUid(this.folder);
+    this.lastUid = currentInfo || lastSeq;
+  }
+
+  private async triggerRecovery(
+    currentCount: number,
+    lastSeq: number,
+    reason: string,
+    options: MonitorOptions
+  ) {
+    logger.warn('Recovery mode triggered', {
+      currentCount,
+      lastSeq,
+      reason,
+    });
+
+    let processedUids: Set<number>;
 
     try {
-      const newMessages = await this.imapClient.searchNewMessages(lastSeqNum, this.folder);
-
-      if (newMessages.length === 0) {
-        return;
-      }
-
-      logger.info(`Found ${newMessages.length} new email(s)`, { lastSeqNum });
-
-      for (const message of newMessages) {
-        await this.processMessage(message, message.seq, options);
-
-        StateManager.updateState(message.seq, message.uid);
-        await StateManager.save();
-      }
-
-      const currentInfo = await this.imapClient.getNewestUid(this.folder);
-      this.lastUid = currentInfo || lastSeqNum;
+      processedUids = await StateManager.loadProcessedUids();
+      logger.info('Loaded processed UID set', { count: processedUids.size });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Error checking for new emails', { error: errorMessage });
-      if (options.onError) {
-        options.onError(new Error(errorMessage));
-      }
-      throw error;
+      logger.error('Failed to load UID set for recovery', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      throw new Error('Recovery failed: Unable to load UID set. Please check .jiny/.processed-uids.json');
     }
+
+    const mailbox = await (this.imapClient as any).client.mailboxOpen(this.folder);
+    const serverUidValidity = mailbox.uidValidity;
+    const stateUidValidity = StateManager.getState().uidValidity;
+
+    if (serverUidValidity !== stateUidValidity) {
+      logger.warn('UIDVALIDITY changed, resetting UID set', {
+        serverUidValidity,
+        stateUidValidity,
+      });
+      await StateManager.resetProcessedUids();
+      processedUids = new Set();
+      StateManager.updateUidValidity(serverUidValidity);
+      await StateManager.save();
+    }
+
+    logger.info('Fetching all messages for recovery', { totalMessages: currentCount });
+
+    const allMessages = await this.imapClient.fetchRange(1, currentCount, this.folder);
+
+    const newMessages = allMessages.filter((msg) => !processedUids.has(msg.uid));
+
+    logger.info(`Recovery: ${newMessages.length} new messages, ${allMessages.length - newMessages.length} already processed`);
+
+    for (const msg of newMessages) {
+      await this.processMessage(msg, msg.seq, options);
+      await StateManager.save();
+    }
+
+    StateManager.updateSequence(currentCount);
+    await StateManager.save();
+
+    logger.info('Recovery complete', { newMessages: newMessages.length });
   }
-  
+
   private async processMessage(imapEmail: ImapEmail, seqNum: number, options: MonitorOptions): Promise<void> {
     try {
       const fromAddress = (imapEmail.envelope.from[0]?.address) ?? '';
       const subject = imapEmail.envelope.subject ?? '';
-      
-      logger.debug('Processing email', { from: fromAddress, subject, seqNum });
-      
+
+      logger.debug('Processing email', { from: fromAddress, subject, uid: imapEmail.uid });
+
       const patternMatch = this.patternMatcher.match(fromAddress, subject);
-      
+
       if (!patternMatch) {
         return;
       }
-      
+
       logger.info('Pattern matched!', { pattern: patternMatch.patternName, from: fromAddress, subject });
-      
+
+      await StateManager.trackUid(imapEmail.uid);
+
       try {
         const emailBody = await this.imapClient.fetchMessageBody(seqNum, this.folder);
         const parsedEmail = await emailParser.parseEmail(emailBody, imapEmail.uid.toString(), imapEmail.uid);
         parsedEmail.matchedPattern = patternMatch.patternName;
-        
+
         if (options.onMatch) {
           await options.onMatch(parsedEmail, patternMatch);
         } else {
@@ -189,76 +281,65 @@ export class EmailMonitor {
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        logger.error('Error parsing email body', { seqNum, error: errorMessage });
+        logger.error('Error parsing email body', { uid: imapEmail.uid, error: errorMessage });
         if (options.onError) {
           options.onError(new Error(errorMessage));
         }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Error processing message', { seqNum, error: errorMessage });
+      logger.error('Error processing message', { uid: imapEmail.uid, error: errorMessage });
       if (options.onError) {
         options.onError(new Error(errorMessage));
       }
     }
   }
-  
+
   private displayEmail(email: any): void {
     console.log('\n' + '='.repeat(80));
     console.log(`📧 MATCHED EMAIL: ${email.matchedPattern}`);
     console.log('='.repeat(80));
-    
+
     if (this.outputConfig.includeHeaders) {
       console.log(`\nFrom: ${email.from}`);
       console.log(`To: ${email.to.join(', ')}`);
       console.log(`Subject: ${email.subject}`);
-      console.log(`Date: ${email.date.toLocaleString()}`);
-      
-      if (Object.keys(email.headers).length > 0) {
-        console.log('\nHeaders:');
-        for (const [key, value] of Object.entries(email.headers)) {
-          console.log(`  ${key}: ${value}`);
-        }
-      }
+      console.log(`Date: ${email.date}`);
     }
-    
-    console.log('\nBody:');
-    
+
     if (email.body.text) {
-      console.log(email.body.text);
+      console.log('\n' + email.body.text);
     }
-    
-    if (email.body.html && this.outputConfig.format === 'text') {
-      console.log('\nHTML content available but not displayed in text mode');
-    }
-    
+
     if (this.outputConfig.includeAttachments && email.attachments && email.attachments.length > 0) {
-      console.log('\nAttachments:');
-      for (const attachment of email.attachments) {
-        console.log(`  - ${attachment.filename} (${attachment.contentType}, ${attachment.size} bytes)`);
-      }
+      console.log('\n📎 Attachments:');
+      email.attachments.forEach((att: any) => {
+        console.log(`  - ${att.filename} (${att.contentType}, ${att.size} bytes)`);
+      });
     }
-    
+
     console.log('\n' + '='.repeat(80) + '\n');
   }
-  
+
   private async idleWait(): Promise<void> {
+    if (!this.imapClient.isConnected()) {
+      return;
+    }
+
     try {
-      await sleep(this.watchConfig.checkInterval * 1000);
+      const client = (this.imapClient as any).client;
+      const mailbox = await client.mailboxOpen(this.folder);
+
+      if (client.idle) {
+        logger.debug('Starting IDLE mode');
+        await client.idle();
+      }
     } catch (error) {
-      logger.debug('IDLE wait interrupted');
+      logger.error('IDLE wait failed', { error: error instanceof Error ? error.message : 'Unknown error' });
+      throw error;
     }
   }
 
-  isRunning(): boolean {
-    return this.running;
-  }
-
-  /**
-   * Trigger an immediate check for new emails, bypassing the normal polling schedule.
-   * This is useful after a long-running operation (like AI processing) where the
-   * IMAP connection may have become stale.
-   */
   async checkNow(): Promise<void> {
     if (!this.running) {
       logger.warn('Cannot check emails: monitor is not running');

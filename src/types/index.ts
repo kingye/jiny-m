@@ -27,6 +27,9 @@ export interface WatchConfig {
   useIdle?: boolean;
   folder?: string;
   reconnect?: ReconnectConfig;
+  maxNewEmailThreshold?: number;
+  enableRecoveryMode?: boolean;
+  disableConsistencyCheck?: boolean;
 }
 
 export interface Pattern {

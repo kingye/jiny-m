@@ -1,11 +1,15 @@
-import { EmailMonitor, type GeneratedFile, type AttachmentConfig } } from '../../services/imap/monitor';
-import type { ConfigManager } from '../../config';
+import { join } from 'node:path';
+import { EmailMonitor } from '../../services/imap/monitor';
+import type { GeneratedFile, AttachmentConfig, Email } from '../../types';
+import { ConfigManager } from '../../config';
 import { EmailStorage } from '../../services/storage';
 import { SmtpService } from '../../services/smtp';
 import { OpenCodeService } from '../../services/opencode';
 import { OutputFormatter } from '../../output';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
+import { CommandRegistry } from '../../core/command-handler/CommandRegistry';
+import { EmailCommandExtractor } from '../../core/command-parser';
 
 export interface MonitorCommandOptions {
   config?: string;
@@ -103,7 +107,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       verbose: options.verbose ?? false,
       onMatch: async (email, patternMatch) => {
         console.log(formatter.format(email));
-        
+
         // Store email as markdown in thread folder
         let threadPath: string | undefined;
         try {
@@ -117,69 +121,20 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         // Send auto-reply if enabled
         if (replyConfig.enabled && smtpService && threadPath) {
           try {
-            let replyText: string;
-            let attachments: Array<{ filename: string; path: string; contentType: string }> | undefined;
-
-            // Get thread directory files before AI processing (for fallback detection)
-            const filesBeforeAI = replyConfig.mode === 'opencode' && replyConfig.attachments?.enabled
-              ? await (await import('node:fs')).promises.readdir(threadPath).then(files => new Set(files.filter(f => !f.startsWith('.'))))
-              : null;
-
-            if (replyConfig.mode === 'opencode' && opencodeService) {
-              // Generate AI reply
-              logger.info('Generating AI reply...', { to: email.from });
-              const aiReply = await opencodeService.generateReply(email, threadPath);
-              replyText = aiReply.text;
-
-              // Check if reply is empty
-              if (!replyText || replyText.trim().length === 0) {
-                logger.warn('Generated reply is empty, skipping send', { to: email.from });
-                await storage.storeReply(threadPath, '[Empty reply - not sent]', email);
-                return;
-              }
-
-              // Prepare attachments
-              if (aiReply.attachments.length > 0) {
-                attachments = await prepareAttachments(
-                  aiReply.attachments,
-                  threadPath,
-                  replyConfig.attachments
-                );
-              } else if (filesBeforeAI && replyConfig.attachments?.enabled) {
-                // Fallback: scan for new files if OpenCode didn't return FileParts
-                attachments = await detectNewFiles(
-                  filesBeforeAI,
-                  threadPath,
-                  replyConfig.attachments
-                );
-              }
-
-              // Store AI reply in thread folder
-              await storage.storeReply(threadPath, replyText, email);
-            } else if (replyConfig.mode === 'static') {
-              replyText = replyConfig.text || '';
-            } else {
-              logger.warn('No reply mode configured, skipping reply');
-              return;
-            }
-
-            await smtpService.replyToEmail(email, replyText, attachments);
-              logger.info('Auto-reply sent', {
-                to: email.from,
-                subject: email.subject,
-                mode: replyConfig.mode,
-                attachmentCount: attachments?.length || 0
-              });
-              
-              if (!options.once && monitorInstance) {
-                // Trigger immediate email check after long AI processing
-                logger.info('Triggering immediate email check after AI processing...');
-                await monitorInstance.checkNow();
-              }
-            } catch (err) {
-              logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
-            }
+            await handleAutoReply(
+              email,
+              threadPath,
+              replyConfig,
+              opencodeService,
+              storage,
+              smtpService,
+              options,
+              monitorInstance
+            );
+          } catch (err) {
+            logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
           }
+        }
       },
       onError: (error) => {
         logger.error('Monitor error callback', { error: error.message });
@@ -196,6 +151,116 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       await opencodeService.close();
     }
   }
+}
+
+// Helper function to handle auto-reply with command extraction
+async function handleAutoReply(
+  email: Email,
+  threadPath: string,
+  replyConfig: { enabled: boolean; mode: 'static' | 'opencode'; text?: string; opencode?: any; attachments?: AttachmentConfig },
+  opencodeService: OpenCodeService | undefined,
+  storage: EmailStorage,
+  smtpService: SmtpService,
+  options: MonitorCommandOptions,
+  monitorInstance: any
+): Promise<void> {
+  // Extract commands from email body
+  const extractor = new EmailCommandExtractor();
+  const emailBody = email.body.text || email.body.html || '';
+  const { cleanedBody, commandLines } = extractor.extractCommands(emailBody);
+
+  // If commands exist, let AttachCommandHandler handle the entire flow
+  if (commandLines.length > 0 && replyConfig.attachments?.enabled) {
+    logger.info('Found commands in email, let AttachCommandHandler handle reply', { commandCount: commandLines.length });
+
+    const commandRegistry = new CommandRegistry();
+    const commands = commandRegistry.parseCommands(emailBody);
+
+    for (const command of commands) {
+      const result = await commandRegistry.execute(command, {
+        email: {
+          id: email.id,
+          from: email.from,
+          subject: email.subject,
+          body: email.body,
+          threadId: email.threadId,
+          headers: email.headers,
+          messageId: email.messageId,
+          references: email.references,
+          date: email.date
+        },
+        threadPath,
+        config: replyConfig.attachments,
+        cleanedBody,
+        smtpService,
+        opencodeService,
+        storage,
+        replyConfig: {
+          mode: replyConfig.mode,
+          text: replyConfig.text
+        }
+      });
+
+      if (result.success) {
+        logger.info('Command-based email sent successfully', { handler: command.handler.name });
+      } else {
+        logger.warn('Command execution failed', { handler: command.handler.name, error: result.error });
+      }
+    }
+
+    return;
+  }
+
+  // Normal flow: no commands detected
+  let replyText: string;
+  let attachments: Array<{ filename: string; path: string; contentType: string }> | undefined;
+
+  // Get thread directory files before AI processing (for fallback detection)
+  const filesBeforeAI = replyConfig.mode === 'opencode' && replyConfig.attachments?.enabled
+    ? await (await import('node:fs')).promises.readdir(threadPath).then(files => new Set(files.filter(f => !f.startsWith('.'))))
+    : null;
+
+  if (replyConfig.mode === 'opencode' && opencodeService) {
+    // Generate AI reply
+    logger.info('Generating AI reply...', { to: email.from });
+    const aiReply = await opencodeService.generateReply(email, threadPath);
+    replyText = aiReply.text;
+
+    if (!replyText || replyText.trim().length === 0) {
+      logger.warn('Generated reply is empty, skipping send', { to: email.from });
+      await storage.storeReply(threadPath, '[Empty reply - not sent]', email);
+      return;
+    }
+
+    if (aiReply.attachments.length > 0) {
+      attachments = await prepareAttachments(
+        aiReply.attachments,
+        threadPath,
+        replyConfig.attachments
+      );
+    } else if (filesBeforeAI && replyConfig.attachments?.enabled) {
+      attachments = await detectNewFiles(
+        filesBeforeAI,
+        threadPath,
+        replyConfig.attachments
+      );
+    }
+
+    await storage.storeReply(threadPath, replyText, email);
+  } else if (replyConfig.mode === 'static') {
+    replyText = replyConfig.text || '';
+  } else {
+    logger.warn('No reply mode configured, skipping reply');
+    return;
+  }
+
+  await smtpService.replyToEmail(email, replyText, attachments);
+  logger.info('Auto-reply sent', {
+    to: email.from,
+    subject: email.subject,
+    mode: replyConfig.mode,
+    attachmentCount: attachments?.length || 0
+  });
 }
 
 // Helper methods for attachment handling

@@ -8,8 +8,12 @@ export interface ImapEmail {
   flags: string[];
   envelope: {
     from: { address: string }[];
+    to: { address: string }[];
     subject: string;
     date: Date;
+    messageId: string;
+    inReplyTo: string;
+    references: string[];
   };
 }
 
@@ -137,11 +141,15 @@ export class ImapClient {
           flags: message.flags || [],
           envelope: {
             from: message.envelope.from || [],
+            to: message.envelope.to || [],
             subject: message.envelope.subject || '',
             date: message.envelope.date || new Date(),
+            messageId: message.envelope.messageId || '',
+            inReplyTo: message.envelope.inReplyTo || '',
+            references: message.envelope.references || [],
           },
         });
-        
+
         if (messages.length >= limit) break;
       }
       
@@ -154,58 +162,75 @@ export class ImapClient {
   
   async fetchMessageBody(seqNum: number, folder: string = 'INBOX'): Promise<string> {
     this.ensureConnected();
-    
-    try {
-      const mailbox = await this.client.mailboxOpen(folder);
-      logger.debug(`Mailbox opened: ${folder}, exists: ${mailbox.exists}, uidNext: ${mailbox.uidNext}, uidValidity: ${mailbox.uidValidity}`);
-      
-      logger.debug(`Fetching message body for sequence ${seqNum}, mailbox has ${mailbox.exists} messages`);
-      
-      let messageSource: string | null = null;
-      let messageCount = 0;
-      
-      try {
-        for await (const message of this.client.fetch(seqNum, { source: true, body: true })) {
-          messageCount++;
-          const keys = Object.keys(message).join(', ');
-          logger.debug(`Message ${messageCount}, available keys: ${keys}`);
-          logger.debug(`Has source: ${!!message.source}, Has body: ${!!message.body}`);
-          
-          if (message.source) {
-            let tempSource: string;
-            if (Buffer.isBuffer(message.source)) {
-              tempSource = message.source.toString('utf-8');
-            } else if (typeof message.source === 'string') {
-              tempSource = message.source;
-            } else {
-              tempSource = JSON.stringify(message.source);
-            }
-            logger.debug(`Got source, length: ${tempSource.length}`);
-            messageSource = tempSource;
-            break;
-          } else if (message.body && typeof message.body === 'string') {
-            logger.debug(`No source, using body, length: ${message.body.length}`);
-            messageSource = message.body;
-            break;
-          }
-        }
-      } catch (fetchError: any) {
-        logger.debug(`Fetch loop error: ${fetchError?.message}`);
+
+    logger.debug(`Fetching message body for sequence ${seqNum} from ${folder}`);
+
+    let messageSource: string | null = null;
+
+    for await (const msg of this.client.fetch(seqNum, { source: true, body: true })) {
+      if (msg.source) {
+        messageSource = this.extractSource(msg.source);
+        break;
       }
-      
-      if (messageCount === 0) {
-        logger.debug(`No messages fetched for sequence ${seqNum}`);
-      }
-      
-      if (messageSource === null) {
-        throw new Error(`No message source returned for sequence ${seqNum}`);
-      }
-      
-      return messageSource;
-    } catch (error: any) {
-      logger.error('Failed to fetch message body', { seqNum, error: error?.message ?? 'Unknown error' });
-      throw error;
     }
+
+    if (!messageSource) {
+      throw new Error(`No message source returned for sequence ${seqNum}`);
+    }
+
+    logger.debug(`Got message source, length: ${messageSource.length}`);
+    return messageSource;
+  }
+
+  private extractSource(source: any): string {
+    if (Buffer.isBuffer(source)) {
+      return source.toString('utf-8');
+    } else if (typeof source === 'string') {
+      return source;
+    } else if (typeof source === 'object') {
+      return JSON.stringify(source);
+    }
+    return String(source);
+  }
+
+  async fetchRange(start: number, end: number, folder: string = 'INBOX'): Promise<Array<ImapEmail & { seq: number }>> {
+    this.ensureConnected();
+
+    const messages: Array<ImapEmail & { seq: number }> = [];
+
+    logger.debug(`Fetching range ${start}:${end} from ${folder}`);
+
+    const mailbox = await this.client.mailboxOpen(folder);
+    logger.debug(`Mailbox has ${mailbox.exists} messages, UIDVALIDITY: ${mailbox.uidValidity}`);
+
+    for await (const msg of this.client.fetch(`${start}:${end}`, {
+      envelope: true,
+      uid: true,
+    })) {
+      messages.push({
+        seq: msg.seq,
+        uid: msg.uid,
+        flags: msg.flags || [],
+        envelope: {
+          from: msg.envelope.from || [],
+          to: msg.envelope.to || [],
+          subject: msg.envelope.subject || '',
+          date: msg.envelope.date || new Date(),
+          messageId: msg.envelope.messageId || '',
+          inReplyTo: msg.envelope.inReplyTo || '',
+          references: msg.envelope.references || [],
+        },
+      });
+    }
+
+    logger.debug(`Fetched ${messages.length} messages from ${start}:${end}`);
+    return messages;
+  }
+
+  async getMailboxCount(folder: string = 'INBOX'): Promise<number> {
+    this.ensureConnected();
+    const mailbox = await this.client.mailboxOpen(folder);
+    return mailbox.exists;
   }
   async getNewestUid(folder: string = 'INBOX'): Promise<number | null> {
     this.ensureConnected();
@@ -251,8 +276,12 @@ export class ImapClient {
               flags: message.flags || [],
               envelope: {
                 from: message.envelope.from || [],
+                to: message.envelope.to || [],
                 subject: message.envelope.subject || '',
                 date: message.envelope.date || new Date(),
+                messageId: message.envelope.messageId || '',
+                inReplyTo: message.envelope.inReplyTo || '',
+                references: message.envelope.references || [],
               },
             });
             break;

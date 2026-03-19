@@ -31,6 +31,9 @@ export const DEFAULT_WATCH_CONFIG = {
     baseDelay: 5000,
     maxDelay: 60000,
   },
+  maxNewEmailThreshold: 50,
+  enableRecoveryMode: true,
+  disableConsistencyCheck: false,
 };
 
 export const DEFAULT_OUTPUT_CONFIG = {

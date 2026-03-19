@@ -29,6 +29,9 @@ User sends email → Pattern Match → AI Agent → Reply via Email
 5. **SMTP Client** - Send AI-generated replies
 6. **Email Parser** - Extract content (body, attachments) from email
 7. **Storage** - Persist emails and session state per thread
+8. **Command System** - Parse and execute email-embedded commands (e.g., `/attach`)
+9. **State Manager** - Track processed UIDs, handle migrations, enable recovery mode
+10. **Security Module** - Path validation, file size/extension checks for attachments
 
 ## AI Agent Core
 
@@ -152,6 +155,9 @@ interface WatchConfig {
   useIdle?: boolean;             // use IMAP IDLE (default: true)
   folder?: string;               // mailbox to monitor (default: "INBOX")
   reconnect?: ReconnectConfig;   // reconnection behavior
+  maxNewEmailThreshold?: number; // max new emails before triggering recovery (default: 50)
+  enableRecoveryMode?: boolean;  // enable UID-based recovery (default: true)
+  disableConsistencyCheck?: boolean; // disable suspicious jump detection (default: false)
 }
 ```
 
@@ -325,6 +331,167 @@ If still empty → Log full response
 }
 ```
 
+## Email Command System
+
+Users can embed commands in email bodies to trigger special behaviors. Commands are extracted before the email body is sent to the AI agent.
+
+### Architecture
+
+```
+Email Body
+    ↓
+EmailCommandExtractor.extractCommands()
+    ↓
+┌──────────────────┐
+│ Has commands?     │
+│                   │
+│ Yes → CommandRegistry.parseCommands()
+│       → CommandHandler.execute()
+│       → Send reply with attachments
+│                   │
+│ No  → Normal AI reply flow
+└──────────────────┘
+```
+
+### Components
+
+1. **EmailCommandExtractor** (`src/core/command-parser.ts`) - Scans email body for command lines (e.g., `/attach file.pptx`), extracts them, and returns a cleaned body with commands removed.
+
+2. **CommandRegistry** (`src/core/command-handler/CommandRegistry.ts`) - Registry of available command handlers. Parses command lines into `ParsedCommand` objects and dispatches to the appropriate handler.
+
+3. **CommandHandler** (`src/core/command-handler/CommandHandler.ts`) - Interface for command handlers. Each handler receives a `CommandContext` with email metadata, thread path, config, and service references.
+
+4. **AttachCommandHandler** (`src/core/command-handler/handlers/AttachCommandHandler.ts`) - Handles `/attach <filename>` commands. Validates file paths via `PathValidator`, checks file size/extension, attaches files to the reply email. If the email body (after command extraction) is non-empty, it generates an AI reply alongside the attachments.
+
+### Supported Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/attach <file1> [file2] ...` | Attach files from thread directory | `/attach report.pptx summary.docx` |
+
+### Command Flow
+
+```
+Email: "Please see attached\n/attach report.pptx"
+    ↓
+Extract commands: ["/attach report.pptx"]
+Cleaned body: "Please see attached"
+    ↓
+CommandRegistry.parseCommands() → [{ handler: AttachCommandHandler, args: ["report.pptx"] }]
+    ↓
+AttachCommandHandler.execute()
+    ↓
+PathValidator.validateFilePath(threadPath, "report.pptx") → safe path
+    ↓
+Generate AI reply from cleaned body
+    ↓
+SMTP reply with AI text + attached report.pptx
+```
+
+### Security (`src/core/security/`)
+
+The `PathValidator` class prevents path traversal and other file-based attacks:
+
+- **Path traversal prevention** - Validates that resolved paths stay within `threadPath`
+- **Null byte detection** - Rejects filenames containing null bytes
+- **Filename sanitization** - Only allows `[\w\-. ]` characters, no hidden files (`.` prefix)
+- **Extension allowlist** - Only configured extensions can be attached
+- **File size limits** - Enforced via `AttachmentConfig.maxFileSize`
+
+```typescript
+class PathValidator {
+  static validateFilePath(threadPath: string, filename: string): string;
+  static validateExtension(filename: string, allowedExtensions: string[]): void;
+  static validateFileSize(size: number, maxSize: number): void;
+}
+```
+
+## UID-Based State Management
+
+### Problem
+
+Sequence-number-based tracking (`lastSequenceNumber`) breaks when emails are deleted or the mailbox is reorganized, since IMAP sequence numbers are reassigned. This can cause:
+- **Missed emails** - if earlier emails are deleted, sequence numbers shift down
+- **Duplicate processing** - if the monitor sees a "new" sequence number that was already processed
+- **Suspicious jumps** - bulk imports or server-side moves can jump sequence count
+
+### Solution: UID Set + Recovery Mode
+
+The `StateManager` now maintains a persistent set of processed UIDs alongside the sequence-based state.
+
+```
+.jiny/
+├── .state.json              # Sequence state + migration version + uidValidity
+└── .processed-uids.txt      # One UID per line, append-only
+```
+
+### State Fields
+
+```typescript
+interface MonitorState {
+  lastSequenceNumber: number;
+  lastProcessedTimestamp: string;
+  lastProcessedUid: number;
+  uidValidity?: number;          // IMAP UIDVALIDITY for invalidation
+  migrationVersion?: number;     // Tracks applied migrations
+}
+```
+
+### Normal Mode vs Recovery Mode
+
+```
+Check for new emails
+    ↓
+currentCount = mailbox.exists
+lastSeq = state.lastSequenceNumber
+    ↓
+┌─────────────────────────────────┐
+│ currentCount < lastSeq?         │ → Deletion detected → Recovery
+│ currentCount > lastSeq + 50?    │ → Suspicious jump   → Recovery
+│ Otherwise                       │ → Normal fetch (lastSeq+1 : currentCount)
+└─────────────────────────────────┘
+
+Recovery Mode:
+    ↓
+Load .processed-uids.txt → Set<number>
+    ↓
+Check UIDVALIDITY (reset set if changed)
+    ↓
+Fetch ALL messages (1:currentCount)
+    ↓
+Filter: only process UIDs not in processed set
+    ↓
+Process new messages, track UIDs
+    ↓
+Update lastSequenceNumber = currentCount
+```
+
+### Migration System
+
+On first startup after upgrade, `StateManager.ensureInitialized()` runs migrations:
+
+- **Migration v1**: Connects to IMAP, fetches all current message UIDs, writes them to `.processed-uids.txt`. This seeds the UID set so existing emails are not reprocessed.
+
+```
+First start after upgrade
+    ↓
+StateManager.ensureInitialized()
+    ↓
+migrationVersion < 1?
+    ↓
+Yes → Connect to IMAP
+    → Fetch all UIDs from mailbox
+    → Write to .processed-uids.txt
+    → Set migrationVersion = 1
+    → Save state
+```
+
+### UID Tracking
+
+- **On pattern match**: `StateManager.trackUid(uid)` appends the UID to `.processed-uids.txt`
+- **On recovery**: Loads the full UID set, filters out already-processed UIDs
+- **On UIDVALIDITY change**: Resets the UID set (UIDs are no longer valid)
+
 ## Configuration
 
 ### Full Config Structure
@@ -391,6 +558,9 @@ smtp:
      maxAttempts: 10
      baseDelay: 5000
      maxDelay: 60000
+   maxNewEmailThreshold: 50
+   enableRecoveryMode: true
+   disableConsistencyCheck: false
 
 patterns:
   - name: support
@@ -431,35 +601,46 @@ reply:
 
 ```
  1. Load configuration from file/CLI args
- 2. Connect to IMAP server (with retry logic)
- 3. Start monitoring loop:
-    a. Check for new emails
-    b. On connection loss → exponential backoff reconnection
-    c. On ContextOverflowError → create new session + retry
-    d. Continue until max reconnection attempts reached
- 4. For each new email:
-    a. Fetch headers (From, Subject)
+ 2. Run state migrations (ensureInitialized → seed UID set if needed)
+ 3. Connect to IMAP server (with retry logic)
+ 4. Start monitoring loop:
+    a. Check mailbox count vs lastSequenceNumber
+    b. If deletion detected or suspicious jump → Recovery mode
+       - Load processed UID set
+       - Check UIDVALIDITY (reset if changed)
+       - Fetch all messages, filter by UID set
+       - Process only unprocessed UIDs
+    c. Normal mode: fetch range (lastSeq+1 : currentCount)
+    d. On connection loss → exponential backoff reconnection
+    e. On ContextOverflowError → create new session + retry
+    f. Continue until max reconnection attempts reached
+ 5. For each new email:
+    a. Fetch headers (From, To, Subject, MessageId, InReplyTo, References)
     b. Run pattern matching
     c. If match:
+       - Track UID in processed set
        - Fetch full body and attachments
        - Parse email content
        - **STAGE 1: Apply semantic cleaning** (remove quoted history, headers)
        - Save email to disk (clean version: ~2KB instead of 900KB)
-       - Load last 5 thread context files (email/reply limit: 2)
-       - Get or create thread-specific OpenCode server
-       - Get or create AI session for thread
-       - **STAGE 3: Build context** (semantic + truncation)
-         - Thread files: 400 chars per file, max 2,000 chars total
-         - Incoming email: 2,000 chars (semantic cleaned + truncated)
-         - Total prompt: max 6,000 chars
-       - Generate AI response with cleaned context
-       - If response empty → skip sending, log warning
-       - **STAGE 2: SMTP reply** (semantic cleaning only)
-         - Quote cleaned version of original email (no quoted history)
-         - Send reply via SMTP
-       - Store AI response in thread folder
- 5. Continue monitoring (IDLE or polling)
- 6. On shutdown: close OpenCode server
+       - **Extract commands** from email body (`/attach`, etc.)
+       - If commands found:
+         - Parse commands via CommandRegistry
+         - Execute each command (e.g., AttachCommandHandler)
+         - Validate file paths via PathValidator
+         - Generate AI reply from cleaned body (commands stripped)
+         - Send reply with attachments via SMTP
+       - If no commands:
+         - Load last 5 thread context files (email/reply limit: 2)
+         - Get or create thread-specific OpenCode server
+         - Get or create AI session for thread
+         - **STAGE 3: Build context** (semantic + truncation)
+         - Generate AI response with cleaned context
+         - If response empty → skip sending, log warning
+         - **STAGE 2: SMTP reply** (semantic cleaning only)
+         - Store AI response in thread folder
+ 6. Continue monitoring (IDLE or polling)
+ 7. On shutdown: close OpenCode server
 ```
 
 ### Connection Resilience
@@ -481,6 +662,14 @@ reply:
 - Creates new session (clears accumulated history)
 - Retries prompt with new session
 - Logs old and new session IDs for tracking
+
+**Mailbox Recovery Mode:**
+- Triggered by deletion detection (currentCount < lastSeq) or suspicious jump (> threshold)
+- Loads processed UID set from `.jiny/.processed-uids.txt`
+- Checks UIDVALIDITY; resets UID set if changed
+- Fetches all messages and filters by processed UID set
+- Only processes genuinely new emails
+- Configurable via `maxNewEmailThreshold` (default: 50) and `disableConsistencyCheck`
 
 ## Pattern Matching
 
@@ -525,9 +714,24 @@ workspace/
     ├── 2026-03-18_18-18-35_jiny_Test4.md
     ├── 2026-03-18_18-19-01_auto-reply.md
     └── README.md                 # General context file (any .md file)
+
+.jiny/
+├── .state.json                   # Monitor state (seq, uid, migration version)
+└── .processed-uids.txt           # One UID per line, append-only
 ```
 
-### session.json Format
+### .state.json Format
+```json
+{
+  "lastSequenceNumber": 42,
+  "lastProcessedTimestamp": "2026-03-19T09:00:00Z",
+  "lastProcessedUid": 1234,
+  "uidValidity": 1,
+  "migrationVersion": 1
+}
+```
+
+### session.json Format (per-thread)
 ```json
 {
   "sessionId": "sess_abc123",
@@ -639,10 +843,25 @@ jiny-m config validate   Validate configuration
 
 ### IMAP Library
 - Use `imapflow` - Modern, Promise-based IMAP client with IDLE support
+- Extended envelope parsing: `to`, `messageId`, `inReplyTo`, `references` fields
+- `fetchRange()` for efficient sequence-based batch fetching
+- `getMailboxCount()` for mailbox size checks
 
 ### Email Parsing
 - Use `mailparser` - Parse MIME messages reliably
 - Integrated cleaning functions: `stripQuotedHistory()`, `truncateText()`
+
+### Email Command System
+- Prefix-based command detection (`/attach`, extensible to other commands)
+- `EmailCommandExtractor` separates commands from email body before AI processing
+- `CommandRegistry` pattern for extensible command handling
+- `PathValidator` ensures attachment security (path traversal, extension, size)
+
+### State Management
+- Dual tracking: sequence numbers (fast path) + UID set (recovery path)
+- Append-only `.processed-uids.txt` for efficient UID tracking
+- Migration system for seamless upgrades (seeds UID set from existing mailbox)
+- UIDVALIDITY checking for mailbox invalidation
 
 ### Three-Stage Cleaning
 - **STAGE 1 (Save):** Semantic cleaning, no truncation - applied in storage.store()
@@ -723,10 +942,11 @@ jiny-m config validate   Validate configuration
 - Rate limiting for AI API calls
 - Sanitize email content before processing
 - TLS for IMAP/SMTP connections
+- **PathValidator** for attachment commands: path traversal prevention, null byte detection, filename sanitization, extension allowlist, file size limits
+- Command extraction runs before AI processing to prevent prompt injection via command syntax
 
 ## Future Enhancements
 - Multiple IMAP account support
-- Attachment analysis with AI
 - Pattern-specific system prompts
 - Webhook integration
 - Multi-language reply support
@@ -734,3 +954,5 @@ jiny-m config validate   Validate configuration
 - Human-in-the-loop approval workflow
 - Thread context summarization for very long conversations
 - Real-time chat interface alongside email
+- Additional email commands (e.g., `/summarize`, `/forward`, `/schedule`)
+- `jiny-m workspace clean` to reprocess old unclean email files
