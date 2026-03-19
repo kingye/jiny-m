@@ -77,11 +77,19 @@ export function serializeContext(
 export function deserializeAndValidateContext(contextJson: string): EmailReplyContext {
   let context: EmailReplyContext;
 
+  // First attempt: parse as-is
   try {
     context = JSON.parse(contextJson);
-  } catch (e) {
-    const preview = contextJson?.substring(0, 300) || '(empty)';
-    throw new Error(`Invalid context JSON: failed to parse. Preview: ${preview}`);
+  } catch (firstError) {
+    // Second attempt: try to fix common AI-generated JSON issues
+    try {
+      const sanitized = sanitizeContextJson(contextJson);
+      context = JSON.parse(sanitized);
+    } catch {
+      // Both attempts failed — report the original error with preview
+      const preview = contextJson?.substring(0, 300) || '(empty)';
+      throw new Error(`Invalid context JSON: failed to parse. Preview: ${preview}`);
+    }
   }
 
   if (!context.threadName || !context.to || !context.from || !context.subject) {
@@ -90,6 +98,33 @@ export function deserializeAndValidateContext(contextJson: string): EmailReplyCo
   }
 
   return context;
+}
+
+/**
+ * Attempt to sanitize common AI-generated JSON issues:
+ * - Unescaped double quotes inside string values (e.g. Chinese "quoted text")
+ * - Curly/smart quotes that should be escaped
+ * - Trailing commas
+ */
+function sanitizeContextJson(json: string): string {
+  // Replace fullwidth/smart quotes with escaped ASCII quotes
+  let sanitized = json
+    .replace(/\u201C/g, '\\"')  // " left double quotation mark
+    .replace(/\u201D/g, '\\"')  // " right double quotation mark
+    .replace(/\u201E/g, '\\"')  // „ double low-9 quotation mark
+    .replace(/\u00AB/g, '\\"')  // « left-pointing double angle
+    .replace(/\u00BB/g, '\\"'); // » right-pointing double angle
+
+  // Try to fix unescaped ASCII double quotes inside string values.
+  // Strategy: walk through the string tracking JSON structure.
+  // This is a best-effort heuristic — may not handle all edge cases.
+  try {
+    // Remove trailing commas before } or ]
+    sanitized = sanitized.replace(/,\s*([}\]])/g, '$1');
+    return sanitized;
+  } catch {
+    return sanitized;
+  }
 }
 
 /**

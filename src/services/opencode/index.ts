@@ -361,7 +361,8 @@ export class OpenCodeService {
     parts.push('');
     parts.push('## Email Reply Instructions');
     parts.push('When you need to reply to an email, you MUST use the jiny_reply_reply_email tool.');
-    parts.push('The email context is provided in a <reply_context> block in the user message. Pass it verbatim as the `context` parameter.');
+    parts.push('The email context is provided in a <reply_context>JSON</reply_context> block in the user message.');
+    parts.push('CRITICAL: Copy the ENTIRE JSON string between <reply_context> and </reply_context> tags and pass it EXACTLY as-is to the `context` parameter. Do NOT modify, summarize, or reconstruct the context JSON. It must be passed character-for-character as it appears.');
     parts.push('Pass your reply text as the `message` parameter.');
     parts.push('If you need to attach files from the working directory, pass their filenames in the `attachments` parameter.');
     parts.push('After calling jiny_reply_reply_email successfully, you are DONE. Do NOT call any other tools or perform any further actions. Just provide a brief confirmation message.');
