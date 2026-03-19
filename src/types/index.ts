@@ -76,6 +76,7 @@ export interface OpenCodeConfig {
   model?: string;
   systemPrompt?: string;
   includeThreadHistory?: boolean;
+  contextSecret?: string;
 }
 
 export interface AttachmentConfig {
@@ -158,6 +159,7 @@ export interface GeneratedFile {
 export interface AiGeneratedReply {
   text: string;
   attachments: GeneratedFile[];
+  replySentByTool: boolean;
 }
 
 export interface MonitorOptions {

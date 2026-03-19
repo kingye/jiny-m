@@ -1,10 +1,11 @@
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import { readdir, readFile as fsReadFile, mkdir } from 'node:fs/promises';
 import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
 import type { OpenCodeConfig, ThreadSession, Email, AiGeneratedReply, GeneratedFile } from '../../types';
 import { logger } from '../../core/logger';
 import { stripReplyPrefix as stripReplyPrefixes } from '../../utils/helpers';
 import { stripQuotedHistory, truncateText } from '../../core/email-parser';
+import { serializeContext } from '../../mcp/context';
 
 type OpenCodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -44,23 +45,112 @@ export class OpenCodeService {
     logger.info('OpenCode server started', { port });
   }
 
-  private async findFreePort(): Promise<number> {
-    const startPort = 5000;
+  /**
+   * Ensure .opencode directory and opencode.json exist in the thread directory.
+   * opencode.json configures the MCP reply_email tool so OpenCode discovers it
+   * as a project-level MCP server when session.prompt() uses this directory.
+   * Only writes the file if it doesn't already exist or has stale config.
+   */
+  private async ensureThreadOpencodeSetup(threadPath: string): Promise<boolean> {
+    const opencodeDir = join(threadPath, '.opencode');
+    await mkdir(opencodeDir, { recursive: true });
 
-    for (let port = startPort; port < startPort + 100; port++) {
+    const configPath = join(threadPath, 'opencode.json');
+    const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
+
+    // Check if config already exists with correct tool path
+    try {
+      const existing = Bun.file(configPath);
+      if (await existing.exists()) {
+        const content = await existing.json();
+        if (content?.mcp?.['jiny_reply']?.command?.[2] === toolPath) {
+          return false; // Config already up to date
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid, will be created below
+    }
+
+    const opencodeConfig = {
+      $schema: 'https://opencode.ai/config.json',
+      permission: {
+        '*': 'allow',
+      },
+      mcp: {
+        'jiny_reply': {
+          type: 'local',
+          command: ['bun', 'run', toolPath],
+          enabled: true,
+          timeout: 60000,
+        },
+      },
+    };
+
+    try {
+      await Bun.write(configPath, JSON.stringify(opencodeConfig, null, 2));
+      logger.info('OpenCode config written with MCP reply tool', { configPath, toolPath });
+      return true; // Freshly written
+    } catch (error) {
+      logger.warn('Failed to write opencode.json', {
+        error: error instanceof Error ? error.message : 'Unknown',
+        configPath,
+      });
+      return false;
+    }
+  }
+
+  private async findFreePort(): Promise<number> {
+    // Use IANA dynamic/ephemeral port range (49152-65535) to avoid conflicts with:
+    // - macOS AirPlay (5000-5001)
+    // - OpenCode TUI (4096+)
+    // - Common dev servers (3000, 8000, 8080, etc.)
+    const startPort = 49152;
+    const endPort = startPort + 100;
+
+    logger.debug('Searching for free port', { range: `${startPort}-${endPort - 1}` });
+
+    for (let port = startPort; port < endPort; port++) {
+      // First check if something is already listening on this port
+      const inUse = await this.isPortInUse(port);
+      if (inUse) {
+        logger.debug('Port in use (active listener detected), skipping', { port });
+        continue;
+      }
+
       try {
         const testServer = Bun.serve({
           port,
           fetch: () => new Response('test'),
         });
         testServer.stop();
+        logger.info('Found free port', { port });
         return port;
       } catch {
+        logger.debug('Port bind failed, skipping', { port });
         continue;
       }
     }
 
-    throw new Error('No free ports available');
+    logger.error('No free ports available', { range: `${startPort}-${endPort - 1}` });
+    throw new Error(`No free ports available in range ${startPort}-${endPort - 1}`);
+  }
+
+  private isPortInUse(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const { createConnection } = require('node:net');
+      const socket = createConnection({ port, host: '127.0.0.1' }, () => {
+        socket.destroy();
+        resolve(true); // Connection succeeded = port is in use
+      });
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false); // Connection failed = port is free
+      });
+      socket.setTimeout(200, () => {
+        socket.destroy();
+        resolve(false); // Timeout = port is free
+      });
+    });
   }
 
   async generateReply(email: Email, threadPath: string): Promise<AiGeneratedReply> {
@@ -70,16 +160,32 @@ export class OpenCodeService {
       throw new Error('OpenCode client not initialized');
     }
 
-    const opencodeDir = join(threadPath, '.opencode');
-    await mkdir(opencodeDir, { recursive: true });
+    // Ensure .opencode directory and opencode.json config exist in thread directory.
+    // opencode.json configures the MCP reply tool so OpenCode discovers it as a project-level tool.
+    // Returns true if a new config was written (meaning existing sessions won't have the tool).
+    const configFreshlyWritten = await this.ensureThreadOpencodeSetup(threadPath);
 
-    const session = await this.getOrCreateSession(threadPath);
+    // If the MCP config was just written, any existing session was created without
+    // the tool. Force a new session so it picks up the MCP config.
+    let session: ThreadSession;
+    if (configFreshlyWritten) {
+      logger.info('MCP config freshly written, creating new session to pick up tool', { threadPath });
+      session = await this.createNewSession(threadPath);
+    } else {
+      session = await this.getOrCreateSession(threadPath);
+    }
 
+    const systemPrompt = this.buildSystemPrompt(threadPath);
     const prompt = await this.buildPrompt(email, threadPath);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });
 
-    logger.debug('Prompt being sent', {
+    logger.debug('System prompt', {
+      systemLength: systemPrompt.length,
+      systemPreview: systemPrompt.substring(0, 300),
+    });
+
+    logger.debug('User prompt being sent', {
       promptLength: prompt.length,
       promptPreview: prompt.length > 1000
         ? prompt.substring(0, 500) + ' ... ' + prompt.substring(prompt.length - 500)
@@ -89,20 +195,44 @@ export class OpenCodeService {
     const modelConfig = this.getModelConfig();
     logger.debug('Using model config', { modelConfig });
 
-    let result = await this.client.session.prompt({
-      path: { id: session.sessionId },
-      query: { directory: threadPath },
-      body: {
-        model: modelConfig,
-        parts: [{ type: 'text', text: prompt }],
-      },
-    });
+    const PROMPT_TIMEOUT = 120_000; // 2 minutes
+
+    let result = await Promise.race([
+      this.client.session.prompt({
+        path: { id: session.sessionId },
+        query: { directory: threadPath },
+        body: {
+          system: systemPrompt,
+          model: modelConfig,
+          parts: [{ type: 'text', text: prompt }],
+        },
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('OpenCode prompt timed out after 2 minutes')), PROMPT_TIMEOUT)
+      ),
+    ]);
 
     if (!result.data) {
       throw new Error('Failed to get response from OpenCode');
     }
 
     logger.debug('Received response', { partsCount: result.data.parts?.length });
+
+    // Log raw parts for debugging tool call detection
+    if (result.data.parts) {
+      for (let i = 0; i < result.data.parts.length; i++) {
+        const part = result.data.parts[i] as any;
+        logger.debug(`Response part [${i}]`, {
+          type: part.type,
+          tool: part.tool,
+          toolName: part.toolName,
+          name: part.name,
+          state: part.state,
+          hasText: !!part.text,
+          textPreview: part.text ? part.text.substring(0, 100) : undefined,
+        });
+      }
+    }
 
     if (!result.data.parts || result.data.parts.length === 0) {
       const errorInfo = result.data.info?.error;
@@ -119,6 +249,7 @@ export class OpenCodeService {
           path: { id: newSession.sessionId },
           query: { directory: threadPath },
           body: {
+            system: systemPrompt,
             model: modelConfig,
             parts: [{ type: 'text', text: prompt }],
           },
@@ -126,7 +257,14 @@ export class OpenCodeService {
       }
     }
 
+    if (!result.data) {
+      throw new Error('Failed to get response from OpenCode after retry');
+    }
+
     const aiReply = this.extractAiReply(result.data.parts as Array<any>);
+
+    // Check if the reply_email MCP tool was called successfully
+    aiReply.replySentByTool = this.checkToolUsed(result.data.parts as Array<any>);
 
     await this.updateSessionState(threadPath, session);
 
@@ -134,7 +272,8 @@ export class OpenCodeService {
       sessionId: session.sessionId,
       textLength: aiReply.text.length,
       attachmentCount: aiReply.attachments.length,
-      attachments: aiReply.attachments.map(a => a.filename)
+      attachments: aiReply.attachments.map(a => a.filename),
+      replySentByTool: aiReply.replySentByTool,
     });
 
     return aiReply;
@@ -232,13 +371,29 @@ export class OpenCodeService {
     await Bun.write(sessionFile, JSON.stringify(session, null, 2));
   }
 
-  private async buildPrompt(email: Email, threadPath: string): Promise<string> {
+  private buildSystemPrompt(threadPath: string): string {
     const parts: string[] = [];
 
     if (this.config.systemPrompt) {
       parts.push(this.config.systemPrompt);
       parts.push('');
     }
+
+    parts.push(`Your working directory is "${threadPath}". You MUST only read, write, and access files within this directory. Do NOT access files outside this directory.`);
+    parts.push('');
+    parts.push('## Email Reply Instructions');
+    parts.push('When you need to reply to an email, you MUST use the jiny_reply_reply_email tool.');
+    parts.push('The email context is provided in a <reply_context> block in the user message. Pass it verbatim as the `context` parameter.');
+    parts.push('Pass your reply text as the `message` parameter.');
+    parts.push('If you need to attach files from the working directory, pass their filenames in the `attachments` parameter.');
+    parts.push('After calling jiny_reply_reply_email successfully, you are DONE. Do NOT call any other tools or perform any further actions. Just provide a brief confirmation message.');
+
+    return parts.join('\n');
+  }
+
+  private async buildPrompt(email: Email, threadPath: string): Promise<string> {
+    const parts: string[] = [];
+    const threadName = basename(threadPath);
 
     if (this.config.includeThreadHistory !== false) {
       const threadContext = await this.buildThreadContext(threadPath);
@@ -265,16 +420,32 @@ export class OpenCodeService {
     parts.push('');
     parts.push(`**Body:**`);
     parts.push(emailBody);
-    parts.push('');
-    parts.push(`---`);
-    parts.push(`Please write a reply to this email.`);
 
-    let prompt = parts.join('\n');
+    // Truncate the conversation content BEFORE appending reply context
+    let conversationPrompt = parts.join('\n');
 
-    if (prompt.length > MAX_TOTAL_PROMPT) {
-      logger.warn('Prompt exceeds total limit, truncating', { promptLength: prompt.length, maxLength: MAX_TOTAL_PROMPT });
-      prompt = truncateText(prompt, MAX_TOTAL_PROMPT);
+    const contextBudget = 500;
+    const conversationBudget = MAX_TOTAL_PROMPT - contextBudget;
+
+    if (conversationPrompt.length > conversationBudget) {
+      logger.warn('Conversation prompt exceeds budget, truncating', {
+        promptLength: conversationPrompt.length,
+        budget: conversationBudget,
+      });
+      conversationPrompt = truncateText(conversationPrompt, conversationBudget);
     }
+
+    // Append reply context (AFTER truncation so it is never cut)
+    const replyContext = serializeContext(email, threadName);
+    const contextBlock = '\n\n<reply_context>' + replyContext + '</reply_context>';
+
+    const prompt = conversationPrompt + contextBlock;
+
+    logger.debug('Prompt composition', {
+      conversationLength: conversationPrompt.length,
+      contextLength: contextBlock.length,
+      totalLength: prompt.length,
+    });
 
     return prompt;
   }
@@ -351,7 +522,46 @@ export class OpenCodeService {
       attachments: attachments.map(a => ({ filename: a.filename, mime: a.mime }))
     });
 
-    return { text, attachments };
+    return { text, attachments, replySentByTool: false };
+  }
+
+  /**
+   * Check if the reply_email MCP tool was called and completed successfully.
+   * Inspects all parts for tool-related entries referencing reply_email.
+   */
+  private checkToolUsed(parts: Array<Record<string, any>>): boolean {
+    if (!parts || parts.length === 0) return false;
+
+    for (const part of parts) {
+      // Check all possible field names that might contain the tool identifier
+      const toolId = (
+        part.tool || part.toolName || part.name || part.id || ''
+      ).toString().toLowerCase();
+
+      const partType = (part.type || '').toString().toLowerCase();
+      const partState = (part.state || part.status || '').toString().toLowerCase();
+
+      // Match any part that references reply_email
+      if (toolId.includes('reply_email') || (partType === 'tool' && toolId.includes('reply'))) {
+        logger.info('reply_email tool part detected', {
+          type: partType,
+          tool: toolId,
+          state: partState,
+        });
+
+        // Accept completed/success/done states, or if no state is present
+        // (some responses don't include state for successful tool calls)
+        if (!partState || partState === 'completed' || partState === 'success' || partState === 'done') {
+          logger.info('reply_email MCP tool was used successfully');
+          return true;
+        }
+
+        // If state indicates failure, log and continue checking other parts
+        logger.warn('reply_email tool call detected but state indicates failure', { state: partState });
+      }
+    }
+
+    return false;
   }
 
   private getModelConfig(): { providerID: string; modelID: string } | undefined {

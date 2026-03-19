@@ -61,6 +61,7 @@ export async function initConfigCommand(configPath?: string): Promise<void> {
         enabled: true,
         provider: 'SiliconFlow',
         model: 'Pro/zai-org/GLM-5',
+        contextSecret: '${JINY_CONTEXT_SECRET}',
         systemPrompt: 'You are an email-based AI assistant. Respond professionally and concisely.',
         includeThreadHistory: true,
       },

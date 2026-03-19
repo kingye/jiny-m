@@ -17,6 +17,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@opencode-ai/sdk": "^1.2.27",
     "commander": "^14.0.3",
     "imapflow": "^1.2.15",

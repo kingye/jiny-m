@@ -32,6 +32,7 @@ User sends email → Pattern Match → AI Agent → Reply via Email
 8. **Command System** - Parse and execute email-embedded commands (e.g., `/attach`)
 9. **State Manager** - Track processed UIDs, handle migrations, enable recovery mode
 10. **Security Module** - Path validation, file size/extension checks for attachments
+11. **MCP Reply Tool** - Stateless MCP server providing OpenCode with a `reply_email` tool for sending thread-scoped replies
 
 ## AI Agent Core
 
@@ -62,13 +63,20 @@ session  session
    │       │
    └───┬───┘
        ↓
-session.prompt(email + context)
+Build prompt with <reply_context> block
+       ↓
+session.prompt(prompt + context)
+       ↓
+OpenCode calls reply_email MCP tool
+       ↓
+MCP Tool: validate context hash
+        → compose threadPath from threadName
+        → SmtpService.replyToEmail()
+        → EmailStorage.storeReply()
        ↓
 Update session.json
        ↓
-SMTP reply
-       ↓
-Store reply in thread folder
+(fallback: if tool not used, monitor sends SMTP directly)
 ```
 
 ### Thread Context Flow
@@ -143,6 +151,22 @@ interface ReplyConfig {
   opencode?: OpenCodeConfig;     // for opencode mode
 }
 
+interface OpenCodeConfig {
+  enabled: boolean;
+  hostname?: string;
+  provider?: string;
+  model?: string;
+  systemPrompt?: string;
+  includeThreadHistory?: boolean;
+  contextSecret?: string;          // HMAC secret for reply context validation (supports ${ENV_VAR})
+}
+
+interface AiGeneratedReply {
+  text: string;
+  attachments: GeneratedFile[];
+  replySentByTool: boolean;        // true if MCP reply_email tool already sent the reply
+}
+
 interface ReconnectConfig {
   maxAttempts: number;           // max reconnection attempts (default: 10)
   baseDelay: number;             // base delay in ms (default: 5000)
@@ -173,6 +197,9 @@ A single shared OpenCode server handles all email threads. Each thread session o
 │       ↓                                                     │
 │  Shared Client                                              │
 │       ↓                                                     │
+│  MCP Tool: jiny-reply (registered once at startup)          │
+│  └─ reply_email tool (stdio, spawns src/mcp/reply-tool.ts)  │
+│       ↓                                                     │
 │  ┌─────────────────────────────────────┐                    │
 │  │ Sessions (per-thread directory)     │                    │
 │  │                                     │                    │
@@ -188,6 +215,7 @@ A single shared OpenCode server handles all email threads. Each thread session o
 #### Key Points:
 - **Single server** - Auto-started on first request, auto-finds free port from 5000
 - **Shared client** - One client instance for all sessions
+- **MCP tool registered once** - `jiny-reply` MCP server spawned at startup, stays alive for all emails
 - **Per-session directory** - `query.directory` parameter tells OpenCode where to work
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
 - **Simple lifecycle** - Server starts on first use, closes when CLI exits
@@ -204,12 +232,15 @@ Server not running?
 Yes → Find free port (5000+)
      → Start OpenCode server
      → Store server/client
+     → Register jiny-reply MCP tool (once)
        ↓
 No → Use existing client
        ↓
 Create session with directory=threadPath
        ↓
-Generate AI reply
+Build prompt with <reply_context> block
+       ↓
+Generate AI reply (OpenCode calls reply_email tool)
        ↓
 CLI exits → close()
 ```
@@ -222,13 +253,15 @@ export class OpenCodeService {
   private server: { close: () => void } | null = null;
   private client: OpenCodeClient | null = null;
   private port: number | null = null;
+  private contextSecret: string;
   
   constructor(config: OpenCodeConfig) {
     this.config = config;
+    // Resolve from config (supports ${ENV_VAR}) or generate random
+    this.contextSecret = config.contextSecret || crypto.randomUUID();
   }
   
   private async ensureServerStarted(): Promise<void> {
-    // Start server if not running
     if (this.server && this.client) return;
     
     const port = await this.findFreePort();
@@ -240,31 +273,28 @@ export class OpenCodeService {
     this.server = result.server;
     this.client = result.client;
     this.port = port;
+
+    // Register MCP reply tool once at startup
+    await this.client.mcp.add({
+      body: {
+        name: 'jiny-reply',
+        config: {
+          type: 'local',
+          command: ['bun', 'run', resolve('src/mcp/reply-tool.ts')],
+          environment: { JINY_CONTEXT_SECRET: this.contextSecret },
+          enabled: true,
+          timeout: 60000,
+        }
+      }
+    });
   }
   
-  private async findFreePort(): Promise<number> {
-    // Try ports starting from 5000
-    for (let port = 5000; port < 5100; port++) {
-      try {
-        const testServer = Bun.serve({ port, fetch: () => new Response('test') });
-        testServer.stop();
-        return port;
-      } catch { continue; }
-    }
-    throw new Error('No free ports available');
-  }
-  
-  async generateReply(email: Email, threadPath: string): Promise<string> {
+  async generateReply(email: Email, threadPath: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
     
-    // Create .opencode directory in thread folder
-    const opencodeDir = join(threadPath, '.opencode');
-    await mkdir(opencodeDir, { recursive: true });
-    
-    // Get or create session with directory pointing to thread
     const session = await this.getOrCreateSession(threadPath);
+    const prompt = await this.buildPrompt(email, threadPath);
     
-    // Pass directory to session.prompt
     const result = await this.client.session.prompt({
       path: { id: session.sessionId },
       query: { directory: threadPath },
@@ -274,26 +304,25 @@ export class OpenCodeService {
       },
     });
     
-    return this.extractText(result.data.parts);
+    const aiReply = this.extractAiReply(result.data.parts);
+    // Check if reply_email tool was called successfully
+    aiReply.replySentByTool = this.checkToolUsed(result.data.parts);
+    return aiReply;
   }
 
-  private async getOrCreateSession(threadPath: string): Promise<ThreadSession> {
-    // Pass directory when creating session
-    const sessionResult = await this.client.session.create({
-      body: { title: path.basename(threadPath) },
-      query: { directory: threadPath },
-    });
+  private async buildPrompt(email: Email, threadPath: string): Promise<string> {
+    // ... thread context + incoming email (unchanged) ...
 
-    // Save session to threadPath/session.json
-    // ...
-  }
+    // Embed reply context for the MCP tool
+    const threadName = basename(threadPath);
+    const replyContext = serializeContext(email, threadName, this.contextSecret);
+    parts.push('');
+    parts.push('<reply_context>' + replyContext + '</reply_context>');
+    parts.push('');
+    parts.push('Use the reply_email tool to send your reply.');
+    parts.push('Pass the <reply_context> block content verbatim as the `context` parameter.');
 
-  async close(): Promise<void> {
-    if (this.server) {
-      this.server.close();
-      this.server = null;
-      this.client = null;
-    }
+    return parts.join('\n');
   }
 }
 ```
@@ -329,6 +358,150 @@ If still empty → Log full response
     }
   }
 }
+```
+
+## MCP Reply Tool
+
+### Overview
+
+OpenCode is given a `reply_email` MCP tool so the AI agent can send email replies directly. The tool is a stateless local MCP server (`src/mcp/reply-tool.ts`) spawned via stdio transport. It is registered once when the OpenCode server starts and stays alive for all email processing.
+
+The email context (recipient, subject, threading headers, thread name) is serialized as a JSON block in the prompt text. OpenCode must pass this context verbatim when calling the tool. An HMAC-SHA256 hash prevents the AI from tampering with the context (e.g., redirecting emails to a different recipient).
+
+### Architecture
+
+```
+Monitor receives email
+    ↓
+OpenCodeService.generateReply(email, threadPath)
+    ↓
+buildPrompt() embeds context:
+  <reply_context>{"threadName":"Server_is_down","to":"user@example.com",
+    "subject":"Re: Server is down","messageId":"<abc@mail>",
+    "references":["<xyz@mail>"],"from":"user@example.com",
+    "fromName":"John","date":"2026-03-19T10:00:00Z",
+    "bodyText":"original body...","contextHash":"hmac..."}
+  </reply_context>
+    ↓
+System prompt instructs: "Use reply_email tool.
+  Pass the <reply_context> block verbatim as the `context` parameter."
+    ↓
+OpenCode calls MCP tool: reply_email(message, context, attachments?)
+    ↓
+MCP Server (stdio subprocess):
+  1. Parse context JSON, validate contextHash (HMAC-SHA256)
+  2. Load config via ConfigManager (reuses ${ENV_VAR} expansion)
+  3. Compose threadPath = join(cwd, workspace.folder, context.threadName)
+  4. Validate attachments via PathValidator (exclude .opencode/, .jiny/)
+  5. Reconstruct Email object from context
+  6. SmtpService.replyToEmail(email, message, attachments)
+  7. EmailStorage.storeReply(threadPath, message, email)
+  8. Return { success, sentTo, attachmentCount }
+```
+
+### Tool Definition
+
+**Tool name:** `reply_email`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | yes | The reply text to send |
+| `context` | string | yes | The `<reply_context>` JSON from the prompt, passed verbatim |
+| `attachments` | string[] | no | Filenames within the thread directory to attach |
+
+### Context Object (`src/mcp/context.ts`)
+
+```typescript
+interface EmailReplyContext {
+  threadName: string;        // Thread directory name (NOT a path)
+  to: string;                // Recipient (from reply-to header or from)
+  from: string;              // Original sender address
+  fromName: string;          // Sender display name
+  subject: string;           // Email subject
+  date: string;              // ISO date string
+  messageId?: string;        // For In-Reply-To header
+  references?: string[];     // For References header
+  bodyText?: string;         // Original body text (for quoting)
+  bodyHtml?: string;         // Original body HTML (fallback for quoting)
+  uid: number;               // Email UID
+  contextHash: string;       // HMAC-SHA256 for tamper detection
+}
+```
+
+**Serialization helpers:**
+- `serializeContext(email, threadName, secret)` → JSON string with computed `contextHash`
+- `deserializeAndValidateContext(json, secret)` → validated `EmailReplyContext` (throws on tamper)
+- `contextToEmail(context)` → reconstructed `Email` object for `SmtpService.replyToEmail()`
+
+### Context Security
+
+The `contextHash` field is an HMAC-SHA256 computed over all context fields (excluding the hash itself) using a secret key:
+
+```
+contextHash = HMAC-SHA256(secret, JSON.stringify(contextFieldsSorted))
+```
+
+**Secret configuration:**
+- Configured via `reply.opencode.contextSecret` in `.jiny/config.json`
+- Supports `${ENV_VAR}` syntax via the existing `expandEnvVars()` mechanism
+- If not provided, a random UUID is generated at startup (logged as a warning)
+- The secret is passed to the MCP subprocess via the `JINY_CONTEXT_SECRET` environment variable (set once at MCP registration time, not per-email)
+
+**Validation flow:**
+1. Monitor embeds context with hash in prompt
+2. OpenCode passes context verbatim to `reply_email` tool
+3. MCP tool recomputes hash from received context fields + secret from env
+4. If hash mismatch → tool returns error, monitor falls back to direct SMTP
+
+### Code Reuse
+
+The MCP tool directly imports existing project modules (Bun resolves imports relative to the file location):
+
+| Module | Usage in MCP Tool |
+|--------|-------------------|
+| `SmtpService` | `replyToEmail(email, message, attachments)` -- handles quoting, threading headers, HTML conversion |
+| `EmailStorage` | `storeReply(threadPath, message, email)` -- writes `auto-reply.md` |
+| `PathValidator` | `validateFilePath()`, `validateExtension()`, `validateFileSize()` -- attachment security |
+| `ConfigManager` | `ConfigManager.create()` -- loads config with `${ENV_VAR}` expansion |
+
+### Attachment Validation
+
+When the `attachments` parameter is provided:
+
+1. For each filename: `PathValidator.validateFilePath(threadPath, filename)` → safe absolute path
+2. Reject if the resolved path contains `.opencode` or `.jiny` path segments
+3. `PathValidator.validateExtension(filename, config.reply.attachments.allowedExtensions)`
+4. `PathValidator.validateFileSize(stat.size, config.reply.attachments.maxFileSize)`
+5. Check file exists and is not a directory
+
+### Thread Path Composition
+
+The tool receives `threadName` (not a raw path) and composes the thread path server-side:
+
+```typescript
+const config = await ConfigManager.create();
+const workspaceFolder = join(process.cwd(), config.getWorkspaceConfig().folder);
+const threadPath = join(workspaceFolder, context.threadName);
+```
+
+This ensures OpenCode cannot specify arbitrary filesystem paths.
+
+### Fallback Behavior
+
+| Scenario | What Happens |
+|----------|-------------|
+| OpenCode uses `reply_email` tool successfully | Monitor sees `replySentByTool: true`, skips its own SMTP/store |
+| OpenCode returns text without using tool | Monitor sees `replySentByTool: false`, sends reply via current direct SMTP flow |
+| Context hash fails validation | Tool returns error to OpenCode, monitor falls back to direct SMTP |
+| SMTP fails in tool | Tool returns error, monitor falls back to direct SMTP |
+| Attachment rejected (security) | Tool returns error with explanation, email may still be sent without attachments |
+
+### File Structure
+
+```
+src/mcp/
+├── reply-tool.ts          # MCP server (standalone, spawned by OpenCode via stdio)
+└── context.ts             # EmailReplyContext serialization + HMAC validation
 ```
 
 ## Email Command System
@@ -532,69 +705,76 @@ interface Config {
 }
 ```
 
-### Configuration Example (`jiny-m.config.yaml`)
+### Configuration Example (`.jiny/config.json`)
 
-```yaml
-imap:
-  host: imap.gmail.com
-  port: 993
-  username: agent@example.com
-  password: ${IMAP_PASSWORD}
-  tls: true
-
-smtp:
-  host: smtp.gmail.com
-  port: 587
-  username: agent@example.com
-  password: ${SMTP_PASSWORD}
-  tls: true
-
- watch:
-   checkInterval: 30
-   maxRetries: 3
-   useIdle: true
-   folder: INBOX
-   reconnect:
-     maxAttempts: 10
-     baseDelay: 5000
-     maxDelay: 60000
-   maxNewEmailThreshold: 50
-   enableRecoveryMode: true
-   disableConsistencyCheck: false
-
-patterns:
-  - name: support
-    sender:
-      domain: [company.com]
-    subject:
-      regex: ".*\\[SUPPORT\\].*"
-  
-  - name: tasks
-    sender:
-      exact: [boss@company.com]
-    subject:
-      prefix: ["Task:", "TODO:"]
-
-output:
-  format: text
-  includeHeaders: true
-  includeAttachments: true
-
-workspace:
-  folder: ./workspace
-
-reply:
-  enabled: true
-  mode: opencode
-  opencode:
-    enabled: true
-    provider: SiliconFlow
-    model: "Pro/zai-org/GLM-5"
-    systemPrompt: |
-      You are an email-based AI assistant.
-      Respond professionally and concisely.
-      Reference previous context when relevant.
-    includeThreadHistory: true
+```json
+{
+  "imap": {
+    "host": "imap.gmail.com",
+    "port": 993,
+    "username": "agent@example.com",
+    "password": "${IMAP_PASSWORD}",
+    "tls": true
+  },
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "username": "agent@example.com",
+    "password": "${SMTP_PASSWORD}",
+    "tls": true
+  },
+  "watch": {
+    "checkInterval": 30,
+    "maxRetries": 3,
+    "useIdle": true,
+    "folder": "INBOX",
+    "reconnect": {
+      "maxAttempts": 10,
+      "baseDelay": 5000,
+      "maxDelay": 60000
+    },
+    "maxNewEmailThreshold": 50,
+    "enableRecoveryMode": true,
+    "disableConsistencyCheck": false
+  },
+  "patterns": [
+    {
+      "name": "support",
+      "sender": { "domain": ["company.com"] },
+      "subject": { "regex": ".*\\[SUPPORT\\].*" }
+    },
+    {
+      "name": "tasks",
+      "sender": { "exact": ["boss@company.com"] },
+      "subject": { "prefix": ["Task:", "TODO:"] }
+    }
+  ],
+  "output": {
+    "format": "text",
+    "includeHeaders": true,
+    "includeAttachments": true
+  },
+  "workspace": {
+    "folder": "./workspace"
+  },
+  "reply": {
+    "enabled": true,
+    "mode": "opencode",
+    "opencode": {
+      "enabled": true,
+      "provider": "SiliconFlow",
+      "model": "Pro/zai-org/GLM-5",
+      "contextSecret": "${JINY_CONTEXT_SECRET}",
+      "systemPrompt": "You are an email-based AI assistant.\nRespond professionally and concisely.\nReference previous context when relevant.",
+      "includeThreadHistory": true
+    },
+    "attachments": {
+      "enabled": true,
+      "maxFileSize": 10485760,
+      "allowedExtensions": [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md"]
+    }
+  }
+}
 ```
 
 ## Agent Processing Flow
@@ -630,15 +810,16 @@ reply:
          - Validate file paths via PathValidator
          - Generate AI reply from cleaned body (commands stripped)
          - Send reply with attachments via SMTP
-       - If no commands:
+       - If no commands (normal OpenCode flow):
          - Load last 5 thread context files (email/reply limit: 2)
-         - Get or create thread-specific OpenCode server
-         - Get or create AI session for thread
+         - Get or create OpenCode session for thread
          - **STAGE 3: Build context** (semantic + truncation)
-         - Generate AI response with cleaned context
+         - Embed `<reply_context>` block with HMAC-signed email context
+         - Send prompt to OpenCode (which has reply_email MCP tool)
+         - OpenCode calls reply_email tool → MCP tool sends SMTP + stores reply
+         - If tool was used (replySentByTool=true): done
+         - If tool was NOT used: monitor falls back to direct SMTP send + store
          - If response empty → skip sending, log warning
-         - **STAGE 2: SMTP reply** (semantic cleaning only)
-         - Store AI response in thread folder
  6. Continue monitoring (IDLE or polling)
  7. On shutdown: close OpenCode server
 ```
@@ -863,14 +1044,25 @@ jiny-m config validate   Validate configuration
 - Migration system for seamless upgrades (seeds UID set from existing mailbox)
 - UIDVALIDITY checking for mailbox invalidation
 
+### MCP Reply Tool
+- Stateless local MCP server (`src/mcp/reply-tool.ts`) spawned via stdio by OpenCode
+- Registered once at OpenCode server startup, stays alive for all emails
+- Email context passed via prompt text as `<reply_context>` JSON block
+- Context validated with HMAC-SHA256 (`contextSecret` from config, supports `${ENV_VAR}`)
+- Directly reuses `SmtpService`, `EmailStorage`, `PathValidator`, `ConfigManager`
+- Thread path composed from `workspace.folder` + `context.threadName` (no raw paths in prompt)
+- Attachment paths validated to exclude `.opencode/` and `.jiny/` directories
+- Dependency: `@modelcontextprotocol/sdk` for stdio transport
+- Fallback: if OpenCode doesn't call the tool, monitor sends reply via direct SMTP
+
 ### Three-Stage Cleaning
 - **STAGE 1 (Save):** Semantic cleaning, no truncation - applied in storage.store()
 - **STAGE 2 (SMTP):** Semantic cleaning, no truncation - applied in smtp.quoteOriginalEmail()
 - **STAGE 3 (Context):** Semantic cleaning + truncation - applied in opencode.buildThreadContext()
 
 ### Configuration
-- YAML config for readability and multi-line string support
-- Environment variable interpolation for credentials
+- JSON config (`.jiny/config.json`) with environment variable interpolation (`${ENV_VAR}`)
+- `contextSecret` for MCP reply tool HMAC validation supports `${ENV_VAR}` syntax
 
 ### Context Optimization
 
@@ -944,6 +1136,10 @@ jiny-m config validate   Validate configuration
 - TLS for IMAP/SMTP connections
 - **PathValidator** for attachment commands: path traversal prevention, null byte detection, filename sanitization, extension allowlist, file size limits
 - Command extraction runs before AI processing to prevent prompt injection via command syntax
+- **MCP Reply Tool context security**: HMAC-SHA256 validation prevents OpenCode from tampering with email context (redirecting recipients, modifying threading headers)
+- **`contextSecret`** supports `${ENV_VAR}` syntax via existing `expandEnvVars()` mechanism -- never hardcoded in config
+- **Thread name only**: MCP tool receives `threadName` (not raw filesystem paths) -- path composed server-side from config
+- **Attachment directory exclusion**: MCP tool rejects attachments from `.opencode/` and `.jiny/` directories
 
 ## Future Enhancements
 - Multiple IMAP account support

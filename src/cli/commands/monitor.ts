@@ -221,9 +221,18 @@ async function handleAutoReply(
     : null;
 
   if (replyConfig.mode === 'opencode' && opencodeService) {
-    // Generate AI reply
+    // Generate AI reply (OpenCode may use MCP reply_email tool to send directly)
     logger.info('Generating AI reply...', { to: email.from });
     const aiReply = await opencodeService.generateReply(email, threadPath);
+
+    // If the MCP reply_email tool was used, the reply was already sent and stored
+    if (aiReply.replySentByTool) {
+      logger.info('Reply sent via MCP reply_email tool', { to: email.from });
+      return;
+    }
+
+    // Fallback: MCP tool was not used, send reply directly
+    logger.info('MCP tool not used, falling back to direct SMTP send', { to: email.from });
     replyText = aiReply.text;
 
     if (!replyText || replyText.trim().length === 0) {

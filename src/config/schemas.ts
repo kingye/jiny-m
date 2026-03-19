@@ -219,6 +219,9 @@ export function validateOpenCodeConfig(config: any): OpenCodeConfig | undefined 
   if (config.includeThreadHistory !== undefined && typeof config.includeThreadHistory !== 'boolean') {
     throw new ConfigValidationError('OpenCode includeThreadHistory must be a boolean');
   }
+  if (config.contextSecret !== undefined && typeof config.contextSecret !== 'string') {
+    throw new ConfigValidationError('OpenCode contextSecret must be a string');
+  }
   
   return {
     enabled: config.enabled ?? true,
@@ -227,6 +230,7 @@ export function validateOpenCodeConfig(config: any): OpenCodeConfig | undefined 
     model: config.model,
     systemPrompt: config.systemPrompt,
     includeThreadHistory: config.includeThreadHistory ?? true,
+    contextSecret: config.contextSecret,
   };
 }
 
