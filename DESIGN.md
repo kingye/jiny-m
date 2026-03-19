@@ -262,16 +262,20 @@ Create session with directory=threadPath
 Build prompt with <reply_context> block
        ↓
 promptWithProgress() (SSE streaming):
-  1. Subscribe to SSE events (client.event.subscribe())
+  1. Subscribe to SSE events (client.event.subscribe({ directory: threadPath }))
   2. Fire promptAsync() (returns immediately)
-  3. Process events:
+  3. Process events (filtered by sessionID, deduped):
+     - server.connected → confirm SSE stream alive
      - message.part.updated → accumulate parts, detect tool calls
-     - session.status (busy) → reset activity timer
+     - session.status → track busy/retry (deduped by status type)
      - session.idle → done, collect result
      - session.error → handle (e.g. ContextOverflow → new session + retry)
   4. Activity-based timeout: 2 min of silence → timeout
-  5. Progress log every 30s while busy
-  6. On SSE failure → fallback to blocking prompt() with 5-min timeout
+  5. Progress log every 10s while busy (shows elapsed, parts, activity, silence)
+  6. Tool call logging: deduped by part ID + status (only logs on status change)
+  7. reply_email detection: checks output for errors (OpenCode reports "completed"
+     even when MCP tool returns isError: true)
+  8. On SSE failure → fallback to blocking prompt() with 5-min timeout
        ↓
 Check replySentByTool (SSE parts → checkToolUsed → signal file fallback)
        ↓
@@ -293,9 +297,7 @@ export class OpenCodeService {
   
   private async ensureServerStarted(): Promise<void> {
     if (this.server && this.client) {
-      // Health check: verify server is still alive
       if (await this.isServerAlive()) return;
-      // Dead — clean up and restart
       try { this.server.close(); } catch {}
       this.server = null; this.client = null; this.port = null;
     }
@@ -304,7 +306,7 @@ export class OpenCodeService {
     const result = await createOpencode({
       hostname: this.config.hostname || '127.0.0.1',
       port,
-      timeout: 15_000, // 15s — CLI can be slow to start
+      timeout: 15_000,
     });
     
     this.server = result.server;
@@ -324,64 +326,74 @@ export class OpenCodeService {
   
   async generateReply(email: Email, threadPath: string, storedEmailFile?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
-    
     const session = await this.getOrCreateSession(threadPath);
     const prompt = await this.buildPrompt(email, threadPath, storedEmailFile);
     
-    let result;
-    try {
-      result = await Promise.race([
-        this.client.session.prompt({
-          path: { id: session.sessionId },
-          query: { directory: threadPath },
-          body: {
-            model: this.getModelConfig(),
-            parts: [{ type: 'text', text: prompt }],
-          },
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('timed out')), 300_000) // 5 minutes
-        ),
-      ]);
-    } catch (error) {
-      // On timeout, check if MCP tool already sent the reply
-      if (error.message.includes('timed out')) {
-        if (await this.checkSignalFile(threadPath)) {
-          return { text: '', attachments: [], replySentByTool: true };
-        }
-      }
-      throw error;
-    }
+    // SSE streaming with activity-based timeout
+    const { parts, replySentByTool } = await this.promptWithProgress(
+      session, threadPath, systemPrompt, modelConfig, prompt,
+    );
     
-    const aiReply = this.extractAiReply(result.data.parts);
-    aiReply.replySentByTool = this.checkToolUsed(result.data.parts);
-    // Fallback: check signal file written by MCP tool
+    const aiReply = this.extractAiReply(parts);
+    aiReply.replySentByTool = replySentByTool || this.checkToolUsed(parts);
     if (!aiReply.replySentByTool) {
       aiReply.replySentByTool = await this.checkSignalFile(threadPath);
     }
     return aiReply;
   }
 
-  private async buildPrompt(email: Email, threadPath: string, storedEmailFile?: string): Promise<string> {
-    // ... thread context via buildPromptContext() + incoming email (stripped) ...
-
-    // Embed reply context for the MCP tool (lean: metadata + incomingFileName only)
-    const threadName = basename(threadPath);
-    const replyContext = serializeContext(email, threadName, storedEmailFile);
-    parts.push('<reply_context>' + replyContext + '</reply_context>');
-
-    return parts.join('\n');
+  private async promptWithProgress(...): Promise<{ parts, replySentByTool }> {
+    // 1. Subscribe to SSE (scoped to thread directory)
+    const subscription = await this.client.event.subscribe({
+      query: { directory: threadPath },
+    });
+    
+    // 2. Fire prompt asynchronously
+    await this.client.session.promptAsync({ path: { id: sessionId }, ... });
+    
+    // 3. Process events with deduplication + activity-based timeout
+    const toolLoggedStatus = new Map<string, string>();
+    let lastSessionStatus = '';
+    for await (const event of subscription.stream) {
+      // Skip events without sessionID (global: server.connected, file.watcher, etc.)
+      if (event.type === 'server.connected') continue;
+      const sid = event.properties?.sessionID || event.properties?.part?.sessionID;
+      if (!sid || sid !== sessionId) continue;
+      
+      lastActivityTime = Date.now(); // Reset activity timer
+      
+      switch (event.type) {
+        case 'message.part.updated':
+          // Accumulate parts (dedup by ID)
+          // Log tool calls only on status change (dedup by partId+status)
+          // Detect reply_email: check output for "Error:" prefix
+          // Log reply_email input args at debug level
+          break;
+        case 'session.status':
+          // Log only on status type change (dedup)
+          break;
+        case 'session.idle':
+          // Done — break event loop
+          break;
+        case 'session.error':
+          // Handle ContextOverflow → retry with new session
+          break;
+      }
+    }
+    
+    // Falls back to promptBlocking() if SSE fails
   }
 
-  // Check signal file left by MCP tool (cross-process detection)
-  private async checkSignalFile(threadPath: string): Promise<boolean> {
-    const signalFile = join(threadPath, '.jiny', 'reply-sent.flag');
-    try {
-      await access(signalFile);
-      await unlink(signalFile); // Clean up
-      return true;
-    } catch { return false; }
-  }
+  // Tool detection: "completed" does NOT mean success.
+  // OpenCode reports "completed" even for isError: true MCP responses.
+  // Must check output field for "Error:" prefix.
+  private checkToolUsed(parts): boolean { ... }
+  
+  // Blocking fallback with 5-min timeout + signal file check
+  private async promptBlocking(...): Promise<{ parts, replySentByTool }> { ... }
+  
+  // Cross-process signal file (written by MCP tool, read+deleted here)
+  private async checkSignalFile(threadPath): Promise<boolean> { ... }
 }
 ```
 
@@ -455,7 +467,9 @@ ensureThreadOpencodeSetup(threadPath)
     - MCP config: jiny_reply server (command + JINY_ROOT env var)
     - permission: { "*": "allow" }
     ↓
-session.prompt({ system: systemPrompt, directory: threadPath })
+session.promptAsync({ system: systemPrompt, directory: threadPath })
+    ↓
+event.subscribe({ directory: threadPath })  ← SSE scoped to thread dir
     ↓
 OpenCode reads opencode.json, spawns MCP subprocess:
   - cwd = threadPath (set by OpenCode via query.directory)
@@ -532,7 +546,7 @@ interface EmailReplyContext {
 
 **Serialization helpers:**
 - `serializeContext(email, threadName, incomingFileName?)` → JSON string
-- `deserializeAndValidateContext(json)` → validated `EmailReplyContext`
+- `deserializeAndValidateContext(json)` → validated `EmailReplyContext` (with JSON sanitization fallback for AI-corrupted input: smart quotes, trailing commas)
 - `contextToEmail(context)` → reconstructed `Email` object (stripped body; MCP tool replaces with full body from file)
 
 ### Prompt Structure
@@ -599,9 +613,11 @@ When the `attachments` parameter is provided:
 
 | Scenario | What Happens |
 |----------|-------------|
-| OpenCode uses `reply_email` tool successfully | Detected in real-time via SSE `message.part.updated` events; `replySentByTool: true`, skips SMTP/store |
+| OpenCode uses `reply_email` tool successfully | Detected in real-time via SSE `message.part.updated` events (checks output for errors); `replySentByTool: true`, skips SMTP/store |
+| `reply_email` tool called but fails (e.g. invalid JSON) | SSE shows `completed` but output starts with "Error:" → `replySentByTool` stays false; AI may retry and succeed |
+| AI reconstructs context instead of passing verbatim | JSON sanitization attempts repair (smart quotes, trailing commas); if parse still fails, tool returns error |
 | OpenCode returns text without using tool | `session.idle` fires, accumulated parts have no tool call; monitor falls back to direct SMTP |
-| AI takes very long (10+ min) but keeps working | SSE events keep arriving → activity timer resets → no timeout; progress logged every 30s |
+| AI takes very long (10+ min) but keeps working | SSE events keep arriving → activity timer resets → no timeout; progress logged every 10s |
 | AI goes silent for 2 minutes | Activity timeout fires → checks signal file → if sent, success; otherwise error |
 | SSE subscription fails | Falls back to blocking `prompt()` with 5-min fixed timeout |
 | Prompt times out (blocking fallback) | Checks signal file — if MCP tool already sent, treats as success |
@@ -629,7 +645,18 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdout is reserved for MCP stdio protocol). Each thread gets its own log file. Logs include:
 - Tool startup (cwd, JINY_ROOT, pid)
 - Each handler step (context validation, config loading, path resolution, attachment validation, SMTP send, storage)
+- On context validation failure: raw context preview (first 500 chars) + length for debugging AI-corrupted JSON
 - Errors with stack traces
+
+### SSE Event Logging
+
+Events from `promptWithProgress()` are logged with deduplication:
+- **Tool calls**: Logged at INFO only on status change per part ID (pending → running → completed). Avoids duplicate "running" logs from repeated SSE updates.
+- **Tool input**: reply_email tool args logged at DEBUG on `pending` (message preview, context preview, attachments)
+- **Tool errors**: reply_email `completed` with error output logged at WARN (not treated as success)
+- **Session status**: Logged at DEBUG only on status type change (avoids duplicate "Session busy" logs)
+- **Progress**: Every 10s at INFO with elapsed time, part count, current activity (reasoning/text/tool name), silence duration
+- **Raw SSE**: First 5 events logged at DEBUG (before session filter) for diagnostics
 
 ### File Structure
 
@@ -642,6 +669,7 @@ src/mcp/
 ### Known Issues / TODO
 
 - Model sometimes uses built-in tools (glob, read, task) before calling `jiny_reply_reply_email`. System prompt instructions mitigate this but model behavior varies.
+- Some models (e.g. GLM-4.7) reconstruct the `<reply_context>` JSON instead of passing it verbatim, causing parse failures. Defensive JSON sanitization handles common corruption (smart quotes, trailing commas). Models may need multiple retry attempts before succeeding.
 
 ## Email Command System
 
