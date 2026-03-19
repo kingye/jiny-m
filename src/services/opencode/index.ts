@@ -569,6 +569,7 @@ export class OpenCodeService {
     let lastProgressLog = Date.now();
     let lastPartType = ''; // Track what the AI is doing (e.g. "reasoning", "text", "tool")
     let lastToolName = '';
+    let lastSessionStatus = '';
     let rawEventCount = 0;
     let done = false;
     let sessionError: any = null;
@@ -714,13 +715,17 @@ export class OpenCodeService {
 
           case 'session.status': {
             const status = properties.status;
-            if (status?.type === 'busy') {
-              logger.debug('Session busy');
-            } else if (status?.type === 'retry') {
-              logger.warn('Session retrying', {
-                attempt: status.attempt,
-                message: status.message,
-              });
+            const statusType = status?.type || 'unknown';
+            if (statusType !== lastSessionStatus) {
+              lastSessionStatus = statusType;
+              if (statusType === 'busy') {
+                logger.debug('Session busy');
+              } else if (statusType === 'retry') {
+                logger.warn('Session retrying', {
+                  attempt: status.attempt,
+                  message: status.message,
+                });
+              }
             }
             break;
           }
