@@ -524,7 +524,7 @@ export class OpenCodeService {
     if (!this.client) throw new Error('OpenCode client not initialized');
 
     const ACTIVITY_TIMEOUT = 120_000;  // 2 minutes of silence → timeout
-    const PROGRESS_LOG_INTERVAL = 30_000; // Log progress every 30 seconds
+    const PROGRESS_LOG_INTERVAL = 10_000; // Log progress every 10 seconds
     const sessionId = session.sessionId;
 
     // Try SSE streaming approach first — scope to thread directory so we receive
