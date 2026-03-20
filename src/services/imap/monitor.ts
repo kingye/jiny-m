@@ -262,6 +262,7 @@ export class EmailMonitor {
       const patternMatch = this.patternMatcher.match(fromAddress, subject);
 
       if (!patternMatch) {
+        logger.debug('No pattern matched, skipping', { from: fromAddress, subject: subject.substring(0, 80) });
         return;
       }
 
