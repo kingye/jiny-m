@@ -49,3 +49,6 @@ create-presentation.js
 *.pptx
 *.bak
 target/
+
+# build output
+dist/
