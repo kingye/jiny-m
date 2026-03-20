@@ -649,12 +649,12 @@ export class OpenCodeService {
                 // Log reply tool input at 'running' status (input is empty at 'pending')
                 if (isReplyTool && toolStatus === 'running' && part.state?.input) {
                   const input = part.state.input;
-                  const contextStr = typeof input.context === 'string' ? input.context : JSON.stringify(input.context);
+                  const contextVal = input.context;
                   logger.info('Reply tool input from AI', {
                     messageLength: typeof input.message === 'string' ? input.message.length : 0,
                     messagePreview: typeof input.message === 'string' ? input.message.substring(0, 100) : '(empty)',
-                    contextLength: contextStr?.length || 0,
-                    contextPreview: contextStr?.substring(0, 300) || '(empty)',
+                    contextType: typeof contextVal,
+                    contextLength: typeof contextVal === 'string' ? contextVal.length : 0,
                     attachments: input.attachments || [],
                   });
                 }

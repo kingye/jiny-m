@@ -44,7 +44,7 @@ export class PromptBuilder {
     parts.push('');
     parts.push('## Reply Instructions');
     parts.push('When replying to a message, use the jiny_reply_reply_message tool:');
-    parts.push('- `context`: Pass the content from the <reply_context> block as a JSON object (not a string)');
+    parts.push('- `context`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
     parts.push('- `message`: Your reply text');
     parts.push('- `attachments`: Optional filenames to attach from the working directory');
     parts.push('After a successful reply, confirm and stop.');

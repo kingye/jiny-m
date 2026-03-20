@@ -7,7 +7,7 @@
  * 3. Find the stored message file for quoted history (via `incomingMessageDir`)
  *
  * The context is embedded in the AI prompt as <reply_context>JSON</reply_context>.
- * The AI must pass it verbatim to the reply_message tool.
+ * The AI passes it as a JSON object to the reply_message tool's `context` parameter.
  */
 
 import type { InboundMessage, ChannelType } from '../channels/types';
@@ -29,8 +29,6 @@ export interface ReplyContext {
   topic: string;
   /** When the original message was sent (ISO string). */
   timestamp: string;
-  /** Stripped/truncated body for AI display only. */
-  contentPreview?: string;
   /** Per-message directory name under messages/ (for reading full body). */
   incomingMessageDir?: string;
   /** External message ID (email: Message-ID; feishu: msg_id). */
@@ -41,26 +39,24 @@ export interface ReplyContext {
   uid: string;
   /**
    * Channel-specific metadata needed for reply construction.
-   * Email: { messageId, references, inReplyTo, headers, from (original From header), fromName }
+   * Email: { inReplyTo, from }
    * FeiShu: { chatId, messageType, ... }
    */
   channelMetadata?: Record<string, any>;
 }
 
 /**
- * Serialize an InboundMessage + threadName into a JSON string for the <reply_context> block.
+ * Serialize an InboundMessage + threadName into a base64-encoded string.
  *
- * The contentPreview is stripped and truncated — it's in the AI prompt for display only.
- * The full message body is NOT included; incomingMessageDir points to the stored
- * messages/<dir>/received.md that the MCP reply tool reads for quoted history.
+ * The context is embedded in the prompt as an opaque token that the AI
+ * passes back unchanged to the reply_message tool. Base64 encoding prevents
+ * the AI from parsing, modifying, or reconstructing the context.
  */
 export function serializeContext(
   message: InboundMessage,
   threadName: string,
   incomingMessageDir?: string,
 ): string {
-  // Determine recipient (who to reply to)
-  // For email: use reply-to header if present, otherwise sender address
   const recipient = message.metadata?.headers?.['reply-to'] || message.senderAddress || message.sender;
 
   const context: ReplyContext = {
@@ -70,12 +66,10 @@ export function serializeContext(
     recipient,
     topic: message.topic,
     timestamp: message.timestamp.toISOString(),
-    // contentPreview omitted — AI already sees the message body in the prompt
     incomingMessageDir,
     externalId: message.externalId,
     threadRefs: message.threadRefs,
     uid: message.channelUid,
-    // Minimal channelMetadata — only fields not already top-level
     channelMetadata: {
       ...(message.channel === 'email' ? {
         inReplyTo: message.replyToId,
@@ -84,16 +78,29 @@ export function serializeContext(
     },
   };
 
-  return JSON.stringify(context);
+  return Buffer.from(JSON.stringify(context)).toString('base64');
 }
 
 /**
- * Validate a context object (already parsed) and return a typed ReplyContext.
- * Used when the AI passes context as a JSON object via MCP tool calling.
+ * Deserialize a base64-encoded context string and validate required fields.
  */
-export function validateContext(context: Record<string, any>): ReplyContext {
+export function deserializeContext(encoded: string): ReplyContext {
+  let json: string;
+  try {
+    json = Buffer.from(encoded, 'base64').toString('utf-8');
+  } catch {
+    throw new Error('Invalid context: failed to decode base64');
+  }
+
+  let context: ReplyContext;
+  try {
+    context = JSON.parse(json);
+  } catch {
+    throw new Error('Invalid context: failed to parse JSON after base64 decode');
+  }
+
   if (!context.threadName || !context.recipient || !context.sender || !context.topic) {
-    const missing = ['threadName', 'recipient', 'sender', 'topic'].filter(f => !context[f]);
+    const missing = ['threadName', 'recipient', 'sender', 'topic'].filter(f => !(context as any)[f]);
     throw new Error(`Invalid context: missing required fields: ${missing.join(', ')}`);
   }
 
@@ -101,16 +108,15 @@ export function validateContext(context: Record<string, any>): ReplyContext {
     context.channel = 'email';
   }
 
-  return context as ReplyContext;
+  return context;
 }
 
 /**
  * Reconstruct an InboundMessage from a ReplyContext.
  * Used by the MCP reply tool to pass to OutboundAdapter.sendReply().
  *
- * Note: content.text is the stripped/truncated preview from the context.
- * The MCP reply tool should replace it with the full body read from
- * messages/<incomingMessageDir>/received.md before sending.
+ * Note: content.text is empty — the MCP reply tool replaces it with the
+ * full body read from messages/<incomingMessageDir>/received.md.
  */
 export function contextToInboundMessage(context: ReplyContext): InboundMessage {
   return {
@@ -122,9 +128,9 @@ export function contextToInboundMessage(context: ReplyContext): InboundMessage {
     recipients: [context.recipient],
     topic: context.topic,
     content: {
-      text: context.contentPreview,
+      text: '',  // Populated by reply tool from received.md
     },
-    timestamp: new Date(context.timestamp),
+    timestamp: context.timestamp ? new Date(context.timestamp) : new Date(),
     threadRefs: context.threadRefs,
     replyToId: context.channelMetadata?.inReplyTo,
     externalId: context.externalId,
