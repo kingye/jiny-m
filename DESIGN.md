@@ -125,6 +125,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 9. **Message Storage** - Persist messages and replies per thread in `messages/` directories
 10. **State Manager** - Track processed UIDs per channel, handle migrations
 11. **Security Module** - Path validation, file size/extension checks for attachments
+12. **Alert Service** - Error alert digests + periodic health check reports via email
 
 ## Core Abstractions
 
@@ -453,9 +454,11 @@ A single shared OpenCode server handles all threads. Each thread session operate
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
 - **Model config via opencode.json** - `model` and `small_model` written to per-thread config; staleness check detects changes
 - **SSE streaming** - `promptAsync()` + `event.subscribe()` for real-time progress and tool detection
-- **Activity-based timeout** - No fixed deadline, only times out if AI goes silent for 2 min
+- **Activity-based timeout** - No fixed deadline; times out if AI goes silent for 2 min (5 min when a tool is actively running, since OpenCode doesn't emit SSE events during tool execution)
 - **Fallback** - If SSE subscription fails, falls back to blocking `prompt()` with 5-min timeout
 - **Signal file detection** - Last-resort: checks `.jiny/reply-sent.flag` if SSE missed tool call events
+- **Stale signal cleanup** - Before each prompt, any leftover `reply-sent.flag` from a previous run is deleted to prevent false-positive detection
+- **SSE force-close** - On timeout, `sseStream.return()` is called to force-unblock the `for await` loop immediately
 
 ### SSE Event Logging
 
@@ -575,7 +578,7 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 | AI reconstructs context instead of passing verbatim | JSON sanitization attempts repair; if parse still fails, tool returns error |
 | AI returns text without using tool | `session.idle` fires; ThreadManager sends via OutboundAdapter directly |
 | AI takes very long but keeps working | SSE events keep arriving → no timeout; progress logged every 10s |
-| AI goes silent for 2 minutes | Activity timeout → checks signal file → if sent, success; otherwise error |
+| AI goes silent for 2 minutes | Activity timeout (5 min if tool running) → force-closes SSE stream → checks signal file → if sent, success; otherwise error |
 | SSE subscription fails | Falls back to blocking `prompt()` with 5-min timeout |
 | OpenCode server dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
@@ -591,9 +594,10 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 ```
 
 **Lifecycle:**
-1. Written by MCP reply-tool after successful outbound send
-2. Read by `OpenCodeService.checkSignalFile()` as fallback detection
-3. Deleted immediately after detection to prevent stale signals
+1. **Cleanup**: Before starting a new prompt, `cleanupStaleSignalFile()` deletes any leftover file from a previous run
+2. Written by MCP reply-tool after successful outbound send
+3. Read by `OpenCodeService.checkSignalFile()` as fallback detection
+4. Deleted immediately after detection to prevent stale signals
 
 ### MCP Tool Logging
 
@@ -644,7 +648,9 @@ The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdo
     │   ├── message-router.ts            # MessageRouter
     │   ├── thread-manager.ts            # ThreadManager (queues + workers)
     │   ├── message-storage.ts           # MessageStorage (channel-agnostic)
+    │   ├── alert-service.ts             # AlertService (error alerts + health check)
     │   ├── state-manager.ts             # StateManager (per-channel state dirs)
+    │   ├── logger.ts                    # Logger (EventEmitter, emits log events)
     │   ├── email-parser.ts              # Utility: stripQuotedHistory, truncateText, etc.
     │   └── security/                    # PathValidator
     ├── services/
@@ -781,6 +787,7 @@ interface Config {
   workspace: WorkspaceConfig;
   worker?: WorkerConfig;
   reply: ReplyConfig;
+  alerting?: AlertingConfig;
   output?: OutputConfig;
 }
 
@@ -856,7 +863,7 @@ Configurable per pattern via `attachments` in the pattern config.
 - Extension allowlist (not blocklist) — only explicitly permitted types saved
 - File size limit per attachment (human-readable: `"25mb"`, `"150kb"`)
 - Max attachments per message (prevents resource exhaustion)
-- Filename sanitization: basename only, no path traversal, no hidden files, no null bytes, max 200 chars, Unicode NFC normalized
+- Filename sanitization: basename only, no path traversal, no hidden files, no null bytes, max 200 chars, Unicode NFC normalized. Dangerous character blocklist (`/\:*?"<>|` + control chars) allows CJK and other Unicode filenames.
 - Double extension defense: only the **last** extension is checked
 - Collision handling: counter suffix (e.g. `report_2.pdf`)
 
@@ -910,3 +917,197 @@ Runs automatically on first startup after upgrade (via `StateManager.ensureIniti
 
 - Some models (e.g. GLM-4.7) reconstruct the `<reply_context>` JSON instead of passing it verbatim. Defensive JSON sanitization handles common corruption (smart quotes, trailing commas). Models may need multiple retry attempts before succeeding.
 - Model sometimes uses built-in tools (glob, read, task) before calling `reply_message`. System prompt instructions mitigate this but model behavior varies.
+
+## Alerting & Health Check (v0.1.1)
+
+### Overview
+
+The AlertService monitors application logs for errors and sends batched alert digest emails. It also provides periodic health check reports summarizing message processing activity.
+
+```
+Logger (EventEmitter)
+  │ emit('log', { level, message, meta, timestamp })
+  ▼
+AlertService
+  │ ├── Error buffer → batched digest email (every N minutes)
+  │ │     includes: error details, context lines, reply-tool.log tails
+  │ └── Health stats → periodic summary email (every N hours)
+  │       includes: messages received/matched/processed, per-thread breakdown
+  ▼
+OutboundAdapter.sendAlert() → SmtpService.sendMail() → SMTP
+```
+
+### Logger Enhancement (`src/core/logger.ts`)
+
+The Logger class extends `EventEmitter` and emits a `'log'` event on every log call (all levels). Zero cost when no listeners are attached (checked via `listenerCount`).
+
+```typescript
+interface LogEvent {
+  level: LogLevel;     // 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
+  message: string;
+  meta?: any;
+  timestamp: string;   // ISO 8601
+}
+```
+
+### OutboundAdapter.sendAlert()
+
+Optional method on the `OutboundAdapter` interface for sending fresh (non-reply) emails:
+
+```typescript
+interface OutboundAdapter {
+  // ... existing methods ...
+  sendAlert?(recipient: string, subject: string, body: string): Promise<{ messageId: string }>;
+}
+```
+
+`EmailOutboundAdapter` implements this via `SmtpService.sendMail()` — a new method that sends fresh emails without the `Re:` prefix or threading headers (`In-Reply-To`, `References`).
+
+### Error Alerting
+
+**Behavior:**
+1. AlertService subscribes to all logger events
+2. Maintains a rolling window of recent log lines (~100 lines) for context
+3. Buffers ERROR-level events with: timestamp, message, meta, last 10 context lines
+4. Every N minutes (configurable, default: 5), flushes the buffer into a digest email
+5. For each error with `meta.thread`: reads tail of `<threadPath>/.jiny/reply-tool.log`
+6. Sends via `outboundAdapter.sendAlert()`
+
+**Self-protection:** Events with `meta._alertInternal: true` are skipped to prevent infinite loops. SMTP failures in the alert path use `console.error()` instead of `logger.error()`.
+
+**Alert email format:**
+```
+Jiny-M Alert Digest
+====================
+
+3 error(s) in the last 5 minutes.
+Time: 2026-03-20T10:00:00.000Z
+
+Errors
+------
+
+### [10:04:54.303] Failed to process message
+{
+  "thread": "my-thread",
+  "channel": "email",
+  "error": "No activity from OpenCode for 120 seconds"
+}
+
+Context:
+  [10:04:44] [INFO] AI processing... {"elapsed":"190s"...}
+  [10:04:54] [WARN] Activity timeout: no events for 2 minutes
+  [10:04:54] [ERROR] Failed to process message ...
+
+Reply Tool Logs
+---------------
+
+### Thread: my-thread
+
+[last 50 lines of reply-tool.log]
+```
+
+### Health Check
+
+**Behavior:**
+1. AlertService tracks processing stats by pattern-matching on well-known log messages
+2. Every N hours (configurable, default: 24), sends a health check summary email
+3. Stats are reset after each report
+
+**Stats tracked (from log event messages):**
+
+| Metric | Log message pattern |
+|--------|-------------------|
+| Messages received | `"Message received"` |
+| Messages matched | `"Pattern matched"` |
+| Replies via MCP tool | `"Reply sent via MCP reply_message tool"` |
+| Replies via fallback | `"Reply sent via outbound adapter (fallback)"` |
+| Processing errors | `"Failed to process message"` |
+| Dropped messages | `"Queue full"` / `"dropping message"` |
+| Per-thread breakdown | Thread name extracted from `meta.thread` |
+| Live queue status | From `ThreadManager.getStats()` (injected via `QueueStatsProvider` interface) |
+
+**Health check email format:**
+```
+Jiny-M Health Check Report
+==========================
+
+Period: 2026-03-20 04:00 -- 2026-03-20 10:00 UTC
+Status: OK
+
+Summary
+-------
+Messages received:     12
+Messages matched:       8
+Messages processed:     7
+Replies sent:           7
+  - via MCP tool:       6
+  - via fallback:       1
+Errors:                 0
+Dropped (queue full):   0
+
+Per-Thread Activity
+-------------------
+Thread: my-thread
+  Received: 5 | Processed: 5 | Errors: 0
+
+Current Queue Status
+--------------------
+Active workers: 0
+Pending threads: 0
+  (all queues empty)
+```
+
+### Configuration
+
+```json
+{
+  "alerting": {
+    "enabled": true,
+    "recipient": "ops@example.com",
+    "batchIntervalMinutes": 5,
+    "maxErrorsPerBatch": 50,
+    "subjectPrefix": "Jiny-M Alert",
+    "includeReplyToolLog": true,
+    "replyToolLogTailLines": 50,
+    "healthCheck": {
+      "enabled": true,
+      "intervalHours": 6,
+      "recipient": "ops-health@example.com"
+    }
+  }
+}
+```
+
+```typescript
+interface AlertingConfig {
+  enabled: boolean;
+  recipient: string;
+  batchIntervalMinutes?: number;     // default: 5
+  maxErrorsPerBatch?: number;        // default: 50
+  subjectPrefix?: string;            // default: "Jiny-M Alert"
+  includeReplyToolLog?: boolean;     // default: true
+  replyToolLogTailLines?: number;    // default: 50
+  healthCheck?: HealthCheckConfig;
+}
+
+interface HealthCheckConfig {
+  enabled: boolean;
+  intervalHours?: number;            // default: 24 (supports decimals, e.g. 0.5 = 30 min)
+  recipient?: string;                // optional override, falls back to alerting.recipient
+}
+```
+
+### Wiring (`monitor.ts`)
+
+```
+1. Load config → create ChannelRegistry
+2. Register email adapters (inbound IMAP + outbound SMTP)
+3. Create MessageStorage, OpenCodeService, ThreadManager, MessageRouter
+4. Create AlertService (after ThreadManager, so it can be injected as QueueStatsProvider)
+   → Pass: emailOutbound, alertingConfig, workspaceFolder, threadManager
+   → alertService.start() subscribes to logger events, starts timers
+5. Start all inbound adapters
+6. On shutdown (SIGINT/SIGTERM): alertService.stop() flushes pending errors
+```
+
+The AlertService requires the email outbound adapter to be connected. If SMTP connection fails, alerting is skipped with a warning.
