@@ -82,6 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-03-20
 
 ### Added
+- **Channel-agnostic architecture**: Complete refactor from email-only to pluggable multi-channel system
+- InboundAdapter / OutboundAdapter interfaces for channel-specific message handling
+- ChannelRegistry for adapter lookup by channel type
+- MessageRouter: delegates matching/naming to adapters, dispatches to thread queues
+- ThreadManager: per-thread FIFO queues with concurrency-limited workers (default: 3)
+- PromptBuilder for channel-agnostic prompt construction
+- Channel-agnostic ReplyContext and MessageStorage
+- Migration v3: automatic state file relocation to `.jiny/email/` + `channel` field in received.md frontmatter
+- BigInt boundary fix: convert imapflow BigInt values to Number at the adapter boundary
+
+## [0.0.1] - 2026-03-19
+
+### Added
 - Initial release: Email monitoring CLI with pattern matching and AI auto-reply
 - IMAP monitoring with IDLE and polling support
 - Pattern-based email filtering (sender, subject prefix/regex)
@@ -93,15 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UID-based state recovery and deletion detection
 - Signal file detection (`.jiny/reply-sent.flag`) for cross-process reply verification
 - ContextOverflow recovery (new session + retry)
-- Channel-agnostic architecture: pluggable multi-channel system with InboundAdapter/OutboundAdapter interfaces
-- ChannelRegistry, MessageRouter, ThreadManager (per-thread queues with concurrency control)
-- PromptBuilder for channel-agnostic prompt construction
-- Channel-agnostic ReplyContext and MessageStorage
-- Migration v3: automatic state file relocation to `.jiny/email/`
 - Standalone binary build support (`bun build --compile`)
 - `--workdir` flag for flexible deployment
 
 [0.1.3]: https://github.com/kingye/jiny-m/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kingye/jiny-m/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kingye/jiny-m/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/kingye/jiny-m/releases/tag/v0.1.0
+[0.1.0]: https://github.com/kingye/jiny-m/compare/v0.0.1...v0.1.0
+[0.0.1]: https://github.com/kingye/jiny-m/releases/tag/v0.0.1
