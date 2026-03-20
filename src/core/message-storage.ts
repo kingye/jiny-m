@@ -24,6 +24,7 @@ import type {
 } from '../channels/types';
 import type { WorkspaceConfig } from '../types';
 import { logger } from './logger';
+import { cleanEmailBody } from './email-parser';
 import { parseFileSize } from '../utils/helpers';
 
 // @ts-ignore - turndown module import
@@ -81,8 +82,9 @@ function messageToMarkdown(message: InboundMessage): string {
   }
 
   // Store full body (including quoted history) as the canonical record.
-  // Stripping is only done at AI prompt consumption time.
-  lines.push(bodyContent);
+  // Clean bracket-nested duplicates and redundant Re: at ingest time
+  // so all downstream consumers get clean data.
+  lines.push(cleanEmailBody(bodyContent));
   lines.push('');
 
   // Attachments metadata

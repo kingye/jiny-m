@@ -300,9 +300,7 @@ export class SmtpService {
     }
 
     // Only include quoted block if there's actual content
-    // Clean up bracket-nested duplicates and redundant Re: in subjects
-    // from previous quoting rounds before re-quoting.
-    const bodyContent = bodyText ? cleanQuotedBody(bodyText).trim() : '';
+    const bodyContent = bodyText?.trim() || '';
     if (!bodyContent) {
       return ''; // No body to quote — skip quoted block entirely
     }
@@ -385,49 +383,4 @@ export class SmtpService {
       </html>
     `;
   }
-}
-
-/**
- * Clean up quoted email body before re-quoting.
- *
- * Fixes two problems that accumulate with each reply round:
- * 1. Bracket-nested duplicates: `addr [addr] [addr [addr]]` → `addr`
- *    Caused by email clients wrapping addresses/URLs in brackets on each reply.
- * 2. Redundant Re:/回复: prefixes in 主题/Subject lines.
- */
-function cleanQuotedBody(text: string): string {
-  return text
-    .split('\n')
-    .map(line => {
-      let cleaned = line;
-
-      // Remove bracket-nested duplicates:
-      //   something [something] → something
-      //   something [something] [something [something]] → something
-      // Repeatedly strip trailing ` [...]` blocks until none remain.
-      let prev = '';
-      while (prev !== cleaned) {
-        prev = cleaned;
-        cleaned = cleaned.replace(/(\S+)\s+\[\S*\1\S*\]/g, '$1');
-      }
-
-      // Also clean standalone nested brackets like [text [text]]
-      prev = '';
-      while (prev !== cleaned) {
-        prev = cleaned;
-        cleaned = cleaned.replace(/\[([^\[\]]*)\s*\[[^\]]*\]\]/g, '[$1]');
-      }
-
-      // Clean 主题/Subject lines: strip redundant Re:/回复: prefixes
-      const subjectMatch = cleaned.match(/^(>*\s*)(主题[:：]\s*|Subject[:：]\s*)(.*)/i);
-      if (subjectMatch) {
-        const prefix = subjectMatch[1] || '';
-        const label = subjectMatch[2] || '';
-        const subject = subjectMatch[3] || '';
-        cleaned = `${prefix}${label}Re: ${stripReplyPrefix(subject)}`;
-      }
-
-      return cleaned;
-    })
-    .join('\n');
 }

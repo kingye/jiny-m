@@ -251,3 +251,52 @@ export class EmailParser {
 
 export const emailParser = new EmailParser();
 export { deriveThreadName, sanitizeForFilename };
+
+/**
+ * Clean up email body text at ingest time.
+ *
+ * Fixes artifacts that accumulate with each reply round in email clients:
+ * 1. Bracket-nested duplicate addresses/URLs:
+ *    `addr [addr] [addr [addr]]` → `addr`
+ * 2. Redundant Re:/回复: prefixes in quoted 主题/Subject lines:
+ *    `主题：Re: 回复: Re: 回复: ... Subject` → `主题：Re: Subject`
+ *
+ * Applied once when storing received.md so all downstream consumers
+ * (prompt builder, reply tool, quoted history) get clean data.
+ */
+export function cleanEmailBody(text: string): string {
+  return text
+    .split('\n')
+    .map(line => {
+      let cleaned = line;
+
+      // Remove bracket-nested duplicates:
+      //   something [something] → something
+      //   something [something] [something [something]] → something
+      // Repeatedly strip trailing ` [...]` blocks that duplicate adjacent text.
+      let prev = '';
+      while (prev !== cleaned) {
+        prev = cleaned;
+        cleaned = cleaned.replace(/(\S+)\s+\[\S*\1\S*\]/g, '$1');
+      }
+
+      // Clean nested brackets like [text [text]]
+      prev = '';
+      while (prev !== cleaned) {
+        prev = cleaned;
+        cleaned = cleaned.replace(/\[([^\[\]]*)\s*\[[^\]]*\]\]/g, '[$1]');
+      }
+
+      // Clean 主題/Subject lines in quoted history: normalize to single Re:
+      const subjectMatch = cleaned.match(/^(>*\s*)(主题[:：]\s*|Subject[:：]\s*)(.*)/i);
+      if (subjectMatch) {
+        const quotePrefix = subjectMatch[1] || '';
+        const label = subjectMatch[2] || '';
+        const subject = subjectMatch[3] || '';
+        cleaned = `${quotePrefix}${label}Re: ${stripReplyPrefix(subject)}`;
+      }
+
+      return cleaned;
+    })
+    .join('\n');
+}
