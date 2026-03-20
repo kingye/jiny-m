@@ -82,3 +82,58 @@ console.log('  cp dist/jiny-m dist/jiny-m-reply-tool /usr/local/bin/');
 console.log('');
 console.log('Usage:');
 console.log('  jiny-m --workdir /path/to/project monitor --debug');
+
+// Check for --install flag
+if (process.argv.includes('--install')) {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const localBin = join(homeDir, '.local', 'bin');
+  const systemBin = '/usr/local/bin';
+
+  // Prefer ~/.local/bin (no sudo), fall back to /usr/local/bin
+  const { existsSync, accessSync, constants, mkdirSync } = await import('node:fs');
+
+  let installDir: string;
+  try {
+    mkdirSync(localBin, { recursive: true });
+    accessSync(localBin, constants.W_OK);
+    installDir = localBin;
+  } catch {
+    installDir = systemBin;
+  }
+
+  console.log(`\nInstalling to ${installDir}...`);
+
+  const needsSudo = (() => {
+    try {
+      accessSync(installDir, constants.W_OK);
+      return false;
+    } catch {
+      return true;
+    }
+  })();
+
+  const prefix = needsSudo ? ['sudo'] : [];
+
+  for (const bin of ['jiny-m', 'jiny-m-reply-tool']) {
+    const result = Bun.spawnSync({
+      cmd: [...prefix, 'cp', join(DIST_DIR, bin), join(installDir, bin)],
+      stdout: 'inherit',
+      stderr: 'inherit',
+    });
+    if (result.exitCode !== 0) {
+      console.error(`  Failed to install ${bin}`);
+      process.exit(1);
+    }
+    console.log(`  ✓ ${bin} → ${installDir}/${bin}`);
+  }
+
+  // Verify it's on PATH
+  const pathDirs = (process.env.PATH || '').split(':');
+  if (!pathDirs.includes(installDir)) {
+    console.log(`\nNote: ${installDir} is not in your PATH. Add it:`);
+    console.log(`  export PATH="${installDir}:$PATH"`);
+  }
+
+  console.log('\nInstalled. Run from anywhere:');
+  console.log('  jiny-m --workdir /path/to/project monitor --debug');
+}
