@@ -52,3 +52,4 @@ target/
 
 # build output
 dist/
+*.bun-build
