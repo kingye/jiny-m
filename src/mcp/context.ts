@@ -174,7 +174,14 @@ export function contextToInboundMessage(context: ReplyContext): InboundMessage {
  * Sanitize common AI-generated JSON issues.
  */
 function sanitizeContextJson(json: string): string {
-  let sanitized = json
+  let sanitized = json;
+
+  // Strip <reply_context>...</reply_context> wrapper tags if the AI included them
+  sanitized = sanitized.replace(/^[\s]*<reply_context>\s*/i, '');
+  sanitized = sanitized.replace(/\s*<\/reply_context>[\s]*$/i, '');
+
+  // Fix smart quotes
+  sanitized = sanitized
     .replace(/\u201C/g, '\\"')  // " left double quotation mark
     .replace(/\u201D/g, '\\"')  // " right double quotation mark
     .replace(/\u201E/g, '\\"')  // „ double low-9 quotation mark
