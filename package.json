@@ -1,6 +1,6 @@
 {
   "name": "jiny-m",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "module": "index.ts",
   "type": "module",
   "private": true,
