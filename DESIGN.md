@@ -678,12 +678,15 @@ The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdo
 ### SSE Event Logging
 
 Events from `promptWithProgress()` are logged with deduplication:
+- **Step start**: Logged at INFO with step number and model name (from `message.updated` event). Shows which model (main vs `small_model`) is used for each step.
+- **Step finish**: Logged at DEBUG with cost, token counts (input/output/reasoning/cache), and reason.
 - **Tool calls**: Logged at INFO only on status change per part ID (pending → running → completed). Avoids duplicate "running" logs from repeated SSE updates.
 - **Tool input**: reply_email tool args logged at DEBUG on `pending` (message preview, context preview, attachments)
 - **Tool errors**: reply_email `completed` with error output logged at WARN (not treated as success)
 - **Session status**: Logged at DEBUG only on status type change (avoids duplicate "Session busy" logs)
 - **Progress**: Every 10s at INFO with elapsed time, part count, current activity (reasoning/text/tool name), silence duration
 - **Raw SSE**: First 5 events logged at DEBUG (before session filter) for diagnostics
+- **Message updated**: Model info (`providerID/modelID`) captured from `message.updated` events for step logging
 
 ### File Structure
 
