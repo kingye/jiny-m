@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-21
+
+### Fixed
+- **Bracket nesting root cause**: Disabled `marked` auto-linking of email addresses and URLs in `markdownToHtml()`. This was the source of exponentially nested brackets (`addr [addr] [addr [addr]]`) — `marked.parse()` converted addresses to `<a href="mailto:...">` tags, and recipients' email clients rendered them as `ADDR [addr]` in plain text on each reply round-trip.
+- **Reply email subject**: Always `Re: <clean subject>` — strips all accumulated `Re:/回复:` prefixes
+- **Reply email quoted history**: Full conversation history preserved (not stripped like AI prompt)
+- **`reply.md` content**: Now stores exactly what was sent (AI reply + full quoted history), matching the recipient's view
+- **`cleanEmailBody` simplified**: Removed ~80 lines of bracket removal logic and `joinBracketContinuations()`. Now only normalizes `主題/Subject` Re: prefixes — the body is stored as received.
+- **Message directory naming**: Uses UTC instead of local time for consistency across timezones
+
+### Changed
+- **Component responsibilities enforced**:
+  - InboundAdapter cleans data at boundary (`cleanEmailBody`, `stripReplyPrefix`)
+  - MessageStorage is pure storage — no transformation
+  - Reply Tool builds full reply markdown (AI text + `formatQuotedReply`)
+  - SmtpService is dumb transport (markdown→HTML, headers, send — no quoting)
+- **`formatQuotedReply()`**: Private function in Reply Tool — formats quoted history without stripping
+- **SmtpService**: Removed `quoteOriginalEmail()` and `TurndownService` — quoting moved to Reply Tool
+
+### Documentation
+- DESIGN.md: comprehensive update — 14 fixes, end-to-end sequence diagram, component responsibilities, session lifecycle
+
 ## [0.1.3] - 2026-03-21
 
 ### Added
@@ -109,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone binary build support (`bun build --compile`)
 - `--workdir` flag for flexible deployment
 
+[0.1.5]: https://github.com/kingye/jiny-m/compare/v0.1.3...v0.1.5
 [0.1.3]: https://github.com/kingye/jiny-m/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kingye/jiny-m/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kingye/jiny-m/compare/v0.1.0...v0.1.1
