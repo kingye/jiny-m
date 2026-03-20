@@ -223,8 +223,7 @@ export interface InboundAttachmentConfig {
 // ============================================================================
 
 /**
- * New channel-agnostic config structure.
- * Supports `channels.email` (and future channels) alongside unified `patterns`.
+ * Channel-agnostic config structure.
  */
 export interface Config {
   /** Channel-specific configurations. */
@@ -241,13 +240,9 @@ export interface Config {
   reply: ReplyConfig;
   /** Output formatting. */
   output?: OutputConfig;
-
-  // Legacy fields (backward compat — auto-migrated to channels.email)
-  /** @deprecated Use channels.email.inbound instead. */
+  /** @internal Legacy fields used during config migration. */
   imap?: ImapConfig;
-  /** @deprecated Use channels.email.outbound instead. */
   smtp?: SmtpConfig;
-  /** @deprecated Use channels.email.watch instead. */
   watch?: WatchConfig;
 }
 
