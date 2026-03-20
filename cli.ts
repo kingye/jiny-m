@@ -37,7 +37,7 @@ await mkdir(jinyDir, { recursive: true });
 program
   .name('jiny-m')
   .description('Jiny-M: AI Agent - Monitor messages and respond with AI')
-  .version('0.0.1')
+  .version('0.1.0')
   .option('-w, --workdir <path>', 'Working directory (where .jiny/config.json lives). Parsed early, before subcommands.');
 
 program

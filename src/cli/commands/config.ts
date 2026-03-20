@@ -100,11 +100,15 @@ export async function validateConfigCommand(configPath?: string): Promise<void> 
     const manager = await configManager.create(filePath);
     const config = manager.getConfig();
     
-    console.log('Configuration is valid! ✓');
-    console.log(`IMAP Server: ${config.imap.host}:${config.imap.port}`);
-    console.log(`Patterns: ${manager.getPatterns().length}`);
-    console.log(`Watch interval: ${config.watch.checkInterval}s`);
-    console.log(`Output format: ${config.output.format}`);
+    console.log('Configuration is valid!');
+    const emailConfig = manager.getEmailChannelConfig();
+    if (emailConfig) {
+      console.log(`Email inbound: ${emailConfig.inbound.host}:${emailConfig.inbound.port || 993}`);
+      console.log(`Email outbound: ${emailConfig.outbound.host}:${emailConfig.outbound.port || 465}`);
+    }
+    console.log(`Patterns: ${manager.getChannelPatterns().length}`);
+    console.log(`Reply mode: ${config.reply.mode}`);
+    console.log(`Output format: ${config.output?.format || 'text'}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error(`Configuration validation failed: ${errorMessage}`);

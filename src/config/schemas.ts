@@ -1,4 +1,4 @@
-import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig } from '../types';
+import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig, ChannelPattern } from '../types';
 import { validateRegex, extractDomain, parseFileSize } from '../utils/helpers';
 
 export class ConfigValidationError extends Error {
@@ -188,22 +188,22 @@ function validateSubjectPattern(pattern: any): Pattern['subject'] {
   return validated;
 }
 
-function validateInboundAttachmentConfig(config: any): InboundAttachmentConfig {
+function validateInboundAttachmentConfig(config: any): InboundAttachmentConfig & { maxAttachmentsPerMessage: number } {
   if (typeof config !== 'object' || config === null) {
-    throw new ConfigValidationError('inboundAttachments must be an object');
+    throw new ConfigValidationError('attachments config must be an object');
   }
 
   if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
-    throw new ConfigValidationError('inboundAttachments.enabled must be a boolean');
+    throw new ConfigValidationError('attachments.enabled must be a boolean');
   }
 
   if (config.allowedExtensions !== undefined) {
     if (!Array.isArray(config.allowedExtensions)) {
-      throw new ConfigValidationError('inboundAttachments.allowedExtensions must be an array');
+      throw new ConfigValidationError('attachments.allowedExtensions must be an array');
     }
     for (const ext of config.allowedExtensions) {
       if (typeof ext !== 'string' || !ext.startsWith('.')) {
-        throw new ConfigValidationError(`Invalid extension in inboundAttachments: "${ext}" (must start with ".")`);
+        throw new ConfigValidationError(`Invalid extension in attachments: "${ext}" (must start with ".")`);
       }
     }
   }
@@ -212,21 +212,22 @@ function validateInboundAttachmentConfig(config: any): InboundAttachmentConfig {
     try {
       parseFileSize(config.maxFileSize);
     } catch (e) {
-      throw new ConfigValidationError(`inboundAttachments.maxFileSize: ${(e as Error).message}`);
+      throw new ConfigValidationError(`attachments.maxFileSize: ${(e as Error).message}`);
     }
   }
 
-  if (config.maxAttachmentsPerEmail !== undefined) {
-    if (typeof config.maxAttachmentsPerEmail !== 'number' || config.maxAttachmentsPerEmail < 1) {
-      throw new ConfigValidationError('inboundAttachments.maxAttachmentsPerEmail must be a positive number');
-    }
+  // Support both old field name (maxAttachmentsPerEmail) and new (maxAttachmentsPerMessage)
+  const maxCount = config.maxAttachmentsPerMessage ?? config.maxAttachmentsPerEmail ?? 10;
+  if (typeof maxCount !== 'number' || maxCount < 1) {
+    throw new ConfigValidationError('attachments.maxAttachmentsPerMessage must be a positive number');
   }
 
   return {
     enabled: config.enabled ?? false,
     allowedExtensions: config.allowedExtensions || ['.pdf', '.pptx', '.docx', '.xlsx', '.png', '.jpg', '.txt', '.md'],
     maxFileSize: config.maxFileSize ?? '25mb',
-    maxAttachmentsPerEmail: config.maxAttachmentsPerEmail ?? 10,
+    maxAttachmentsPerEmail: maxCount,
+    maxAttachmentsPerMessage: maxCount,
   };
 }
 
@@ -317,16 +318,101 @@ export function validateConfig(config: any): Config {
   if (!config) {
     throw new ConfigValidationError('Configuration is required');
   }
-  
-  return {
-    imap: validateImapConfig(config.imap),
-    smtp: validateSmtpConfig(config.smtp),
-    watch: validateWatchConfig(config.watch),
-    patterns: Array.isArray(config.patterns) ? config.patterns.map(validatePattern) : [],
+
+  // Support both new (channels.email) and legacy (top-level imap/smtp) formats
+  let imapConfig: ImapConfig | undefined;
+  let smtpConfig: SmtpConfig | undefined;
+  let watchConfig: WatchConfig | undefined;
+
+  if (config.channels?.email) {
+    // New format: channels.email.inbound / channels.email.outbound
+    imapConfig = config.channels.email.inbound ? validateImapConfig(config.channels.email.inbound) : undefined;
+    smtpConfig = config.channels.email.outbound ? validateSmtpConfig(config.channels.email.outbound) : undefined;
+    watchConfig = config.channels.email.watch ? validateWatchConfig(config.channels.email.watch) : undefined;
+  }
+
+  // Legacy format fallback
+  if (!imapConfig && config.imap) {
+    imapConfig = validateImapConfig(config.imap);
+  }
+  if (!smtpConfig && config.smtp) {
+    smtpConfig = validateSmtpConfig(config.smtp);
+  }
+  if (!watchConfig && config.watch) {
+    watchConfig = validateWatchConfig(config.watch);
+  }
+
+  // Convert patterns: support both legacy Pattern and new ChannelPattern
+  const rawPatterns = Array.isArray(config.patterns) ? config.patterns : [];
+  const patterns = rawPatterns.map((p: any) => {
+    if (p.channel && p.rules) {
+      // New ChannelPattern format
+      return validateChannelPattern(p);
+    }
+    // Legacy Pattern format — validate and keep as-is for backward compat
+    return validatePattern(p);
+  });
+
+  const result: Config = {
+    patterns,
     output: validateOutputConfig(config.output),
     workspace: validateWorkspaceConfig(config.workspace),
     reply: validateReplyConfig(config.reply),
   };
+
+  // Store channel config in new format
+  if (imapConfig || smtpConfig) {
+    result.channels = {
+      email: {
+        inbound: imapConfig!,
+        outbound: smtpConfig!,
+        watch: watchConfig,
+      },
+    };
+  }
+
+  // Keep legacy fields for backward compat
+  if (imapConfig) result.imap = imapConfig;
+  if (smtpConfig) result.smtp = smtpConfig;
+  if (watchConfig) result.watch = watchConfig;
+
+  // Worker config
+  if (config.worker) {
+    result.worker = {
+      maxConcurrentThreads: config.worker.maxConcurrentThreads ?? 3,
+      maxQueueSizePerThread: config.worker.maxQueueSizePerThread ?? 10,
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Validate a new-format ChannelPattern with channel + rules.
+ */
+function validateChannelPattern(pattern: any): ChannelPattern {
+  if (!pattern.name || typeof pattern.name !== 'string') {
+    throw new ConfigValidationError('Pattern name is required');
+  }
+  if (!pattern.channel || typeof pattern.channel !== 'string') {
+    throw new ConfigValidationError(`Pattern "${pattern.name}" must have a channel field`);
+  }
+  if (!pattern.rules || typeof pattern.rules !== 'object') {
+    throw new ConfigValidationError(`Pattern "${pattern.name}" must have a rules object`);
+  }
+
+  const result: ChannelPattern = {
+    name: pattern.name,
+    channel: pattern.channel,
+    enabled: pattern.enabled,
+    rules: pattern.rules,
+  };
+
+  if (pattern.attachments) {
+    result.attachments = validateInboundAttachmentConfig(pattern.attachments);
+  }
+
+  return result;
 }
 
 export function expandEnvVars(config: any): any {

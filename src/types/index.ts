@@ -1,3 +1,36 @@
+// ============================================================================
+// Re-export channel types (canonical source)
+// ============================================================================
+import type {
+  ChannelType as _ChannelType,
+  InboundMessage as _InboundMessage,
+  MessageContent as _MessageContent,
+  MessageAttachment as _MessageAttachment,
+  InboundAdapter as _InboundAdapter,
+  InboundAdapterOptions as _InboundAdapterOptions,
+  OutboundAdapter as _OutboundAdapter,
+  ChannelPattern as _ChannelPattern,
+  PatternMatch as _PatternMatch,
+  AttachmentDownloadConfig as _AttachmentDownloadConfig,
+  WorkerConfig as _WorkerConfig,
+} from '../channels/types';
+
+export type ChannelType = _ChannelType;
+export type InboundMessage = _InboundMessage;
+export type MessageContent = _MessageContent;
+export type MessageAttachment = _MessageAttachment;
+export type InboundAdapter = _InboundAdapter;
+export type InboundAdapterOptions = _InboundAdapterOptions;
+export type OutboundAdapter = _OutboundAdapter;
+export type ChannelPattern = _ChannelPattern;
+export type PatternMatch = _PatternMatch;
+export type AttachmentDownloadConfig = _AttachmentDownloadConfig;
+export type WorkerConfig = _WorkerConfig;
+
+// ============================================================================
+// Email-specific types (used internally by email channel adapter)
+// ============================================================================
+
 export interface ImapConfig {
   host: string;
   port?: number;
@@ -32,6 +65,18 @@ export interface WatchConfig {
   disableConsistencyCheck?: boolean;
 }
 
+/** Email channel config (inbound IMAP + outbound SMTP + watch settings). */
+export interface EmailChannelConfig {
+  inbound: ImapConfig;
+  outbound: SmtpConfig;
+  watch?: WatchConfig;
+}
+
+/**
+ * Legacy pattern type (email-only, pre-channel-agnostic).
+ * Kept for backward compatibility during config migration.
+ * @deprecated Use ChannelPattern from channels/types.ts instead.
+ */
 export interface Pattern {
   name: string;
   sender?: SenderPattern;
@@ -52,66 +97,9 @@ export interface SubjectPattern {
   regex?: string;
 }
 
-export interface OutputConfig {
-  format: OutputFormat;
-  includeHeaders: boolean;
-  includeAttachments: boolean;
-  truncateLength?: number;
-}
-
-export interface WorkspaceConfig {
-  folder: string;
-}
-
-export interface ThreadSession {
-  sessionId: string;
-  createdAt: string;
-  lastUsedAt: string;
-  emailCount: number;
-}
-
-export interface OpenCodeConfig {
-  enabled: boolean;
-  hostname?: string;
-  model?: string;                   // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
-  smallModel?: string;              // "provider/model" format for lightweight tasks
-  systemPrompt?: string;
-  includeThreadHistory?: boolean;
-  contextSecret?: string;
-}
-
-export interface AttachmentConfig {
-  enabled: boolean;
-  maxFileSize: number | string;  // bytes or human-readable like "10mb"
-  allowedExtensions: string[];  // default: .ppt, .pptx, .doc, .docx, .txt, .md
-}
-
-export interface InboundAttachmentConfig {
-  enabled: boolean;
-  allowedExtensions: string[];   // e.g. [".pdf", ".pptx", ".docx", ".xlsx", ".png", ".jpg"]
-  maxFileSize: number | string;  // bytes or human-readable like "25mb"
-  maxAttachmentsPerEmail: number; // default: 10
-}
-
-export interface ReplyConfig {
-  enabled: boolean;
-  mode: 'static' | 'opencode';
-  text?: string;
-  opencode?: OpenCodeConfig;
-  attachments?: AttachmentConfig;  // NEW
-}
-
-export interface Config {
-  imap: ImapConfig;
-  smtp?: SmtpConfig;
-  watch: WatchConfig;
-  patterns: Pattern[];
-  output: OutputConfig;
-  workspace: WorkspaceConfig;
-  reply: ReplyConfig;
-}
-
-export type OutputFormat = 'text' | 'json';
+// ============================================================================
+// Email internal types (used by IMAP/SMTP services and email parser)
+// ============================================================================
 
 export interface Email {
   id: string;
@@ -147,18 +135,52 @@ export interface Attachment {
   savedPath?: string;
 }
 
-export interface PatternMatch {
-  patternName: string;
-  matches: {
-    sender?: {
-      type: 'regex' | 'exact' | 'domain';
-      value: string;
-    };
-    subject?: {
-      prefix?: string;
-      regex?: string;
-    };
-  };
+// ============================================================================
+// Output / Display
+// ============================================================================
+
+export interface OutputConfig {
+  format: OutputFormat;
+  includeHeaders: boolean;
+  includeAttachments: boolean;
+  truncateLength?: number;
+}
+
+export type OutputFormat = 'text' | 'json';
+
+// ============================================================================
+// Workspace / Storage
+// ============================================================================
+
+export interface WorkspaceConfig {
+  folder: string;
+}
+
+// ============================================================================
+// AI / OpenCode
+// ============================================================================
+
+export interface ThreadSession {
+  sessionId: string;
+  createdAt: string;
+  lastUsedAt: string;
+  emailCount: number;
+}
+
+export interface OpenCodeConfig {
+  enabled: boolean;
+  hostname?: string;
+  model?: string;                   // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
+  smallModel?: string;              // "provider/model" format for lightweight tasks
+  systemPrompt?: string;
+  includeThreadHistory?: boolean;
+  contextSecret?: string;
+}
+
+export interface AiGeneratedReply {
+  text: string;
+  attachments: GeneratedFile[];
+  replySentByTool: boolean;
 }
 
 export interface GeneratedFile {
@@ -168,11 +190,65 @@ export interface GeneratedFile {
   size?: number;
 }
 
-export interface AiGeneratedReply {
-  text: string;
-  attachments: GeneratedFile[];
-  replySentByTool: boolean;
+// ============================================================================
+// Reply / Attachment Config
+// ============================================================================
+
+export interface ReplyConfig {
+  enabled: boolean;
+  mode: 'static' | 'opencode';
+  text?: string;
+  opencode?: OpenCodeConfig;
+  attachments?: AttachmentConfig;
 }
+
+export interface AttachmentConfig {
+  enabled: boolean;
+  maxFileSize: number | string;  // bytes or human-readable like "10mb"
+  allowedExtensions: string[];
+}
+
+/**
+ * @deprecated Use AttachmentDownloadConfig from channels/types.ts instead.
+ */
+export interface InboundAttachmentConfig {
+  enabled: boolean;
+  allowedExtensions: string[];
+  maxFileSize: number | string;
+  maxAttachmentsPerEmail: number;
+}
+
+// ============================================================================
+// Top-level Config
+// ============================================================================
+
+/**
+ * Channel-agnostic config structure.
+ */
+export interface Config {
+  /** Channel-specific configurations. */
+  channels?: {
+    email?: EmailChannelConfig;
+  };
+  /** Unified pattern list with channel-specific rules. */
+  patterns: (ChannelPattern | Pattern)[];
+  /** Workspace storage settings. */
+  workspace: WorkspaceConfig;
+  /** Worker pool settings. */
+  worker?: WorkerConfig;
+  /** Reply generation settings. */
+  reply: ReplyConfig;
+  /** Output formatting. */
+  output?: OutputConfig;
+  /** @internal Legacy fields used during config migration. */
+  imap?: ImapConfig;
+  smtp?: SmtpConfig;
+  watch?: WatchConfig;
+}
+
+// ============================================================================
+// Monitor / CLI
+// ============================================================================
 
 export interface MonitorOptions {
   configPath: string;

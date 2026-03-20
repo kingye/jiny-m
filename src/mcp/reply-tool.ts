@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * MCP Reply Tool - Stateless MCP server for email replies.
+ * MCP Reply Tool - Stateless MCP server for channel-agnostic message replies.
  *
  * Spawned by OpenCode via stdio transport, one instance per thread.
  * OpenCode sets the subprocess cwd to the thread directory.
  * JINY_ROOT env var points to the project root for config loading.
  *
- * Provides a `reply_email` tool that sends email replies scoped to the current thread.
- * Reuses existing project modules: SmtpService, EmailStorage, PathValidator, ConfigManager.
+ * Provides a `reply_message` tool that sends replies through the originating
+ * channel (email, feishu, etc.) based on the context.channel field.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -16,17 +16,21 @@ import { join, normalize } from 'node:path';
 import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { appendFileSync, mkdirSync } from 'node:fs';
 
-import { deserializeAndValidateContext, contextToEmail } from './context';
+import { deserializeAndValidateContext, contextToInboundMessage } from './context';
+import type { ReplyContext } from './context';
+import type { OutboundAdapter, InboundMessage } from '../channels/types';
 import { ConfigManager } from '../config';
-import { SmtpService } from '../services/smtp';
-import { EmailStorage } from '../services/storage';
+import { MessageStorage } from '../core/message-storage';
 import { PathValidator } from '../core/security';
+
+// Email-specific imports (loaded on demand when channel is "email")
+import { SmtpService } from '../services/smtp';
+import { EmailOutboundAdapter } from '../channels/email/outbound';
 
 const EXCLUDED_DIRS = ['.opencode', '.jiny'];
 
 // File-based logging since stdout is used for MCP protocol.
-// Log into the thread's .jiny directory (cwd is set to the thread dir by OpenCode).
-let LOG_FILE = '/tmp/jiny-mcp-reply-tool.log'; // fallback until cwd is confirmed
+let LOG_FILE = '/tmp/jiny-mcp-reply-tool.log';
 function initLogFile() {
   try {
     const jinyDir = join(process.cwd(), '.jiny');
@@ -53,15 +57,15 @@ const server = new McpServer({
 });
 
 server.tool(
-  'reply_email',
-  'Send an email reply scoped to the current thread. The tool handles quoted mail history, SMTP sending, and reply storage. Attachments must be files within the thread directory (excluding .opencode and .jiny directories).',
+  'reply_message',
+  'Send a reply message back through the originating channel. Handles quoting, threading, and reply storage. Attachments must be files within the thread directory (excluding .opencode and .jiny directories).',
   {
-    message: z.string().describe('The reply text to send to the email sender'),
+    message: z.string().describe('The reply text to send'),
     context: z.string().describe('The <reply_context> JSON block from the prompt. Pass it verbatim without modification.'),
-    attachments: z.array(z.string()).optional().describe('Optional list of filenames within the thread directory to attach to the reply'),
+    attachments: z.array(z.string()).optional().describe('Optional list of filenames within the thread directory to attach'),
   },
   async ({ message, context: contextJson, attachments: attachmentFilenames }) => {
-    log('INFO', 'reply_email tool called', {
+    log('INFO', 'reply_message tool called', {
       messageLength: message?.length,
       hasContext: !!contextJson,
       attachments: attachmentFilenames || [],
@@ -70,11 +74,11 @@ server.tool(
     });
 
     try {
-      return await handleReplyEmail(message, contextJson, attachmentFilenames);
+      return await handleReplyMessage(message, contextJson, attachmentFilenames);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       const stack = error instanceof Error ? error.stack : undefined;
-      log('ERROR', 'Unhandled error in reply_email', { error: msg, stack });
+      log('ERROR', 'Unhandled error in reply_message', { error: msg, stack });
       return {
         content: [{ type: 'text' as const, text: `Error: ${msg}` }],
         isError: true,
@@ -83,16 +87,21 @@ server.tool(
   },
 );
 
-async function handleReplyEmail(
+async function handleReplyMessage(
   message: string,
   contextJson: string,
   attachmentFilenames?: string[],
 ) {
   // 1. Validate context
-  let emailContext;
+  let replyContext: ReplyContext;
   try {
-    emailContext = deserializeAndValidateContext(contextJson);
-    log('INFO', 'Context validated', { to: emailContext.to, from: emailContext.from, subject: emailContext.subject });
+    replyContext = deserializeAndValidateContext(contextJson);
+    log('INFO', 'Context validated', {
+      channel: replyContext.channel,
+      recipient: replyContext.recipient,
+      sender: replyContext.sender,
+      topic: replyContext.topic,
+    });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown validation error';
     log('ERROR', 'Context validation failed', {
@@ -131,19 +140,12 @@ async function handleReplyEmail(
     const configManager = new ConfigManager(configPath);
     await configManager.load();
     config = configManager.getConfig();
-    log('INFO', 'Config loaded', { configPath, hasSmtp: !!config.smtp });
+    log('INFO', 'Config loaded', { configPath });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
     log('ERROR', 'Failed to load config', { error: msg, rootDir });
     return {
       content: [{ type: 'text' as const, text: `Error: Failed to load config - ${msg}` }],
-      isError: true,
-    };
-  }
-
-  if (!config.smtp) {
-    return {
-      content: [{ type: 'text' as const, text: 'Error: SMTP configuration is not defined in config' }],
       isError: true,
     };
   }
@@ -162,10 +164,8 @@ async function handleReplyEmail(
 
     for (const filename of attachmentFilenames) {
       try {
-        // PathValidator checks: traversal, null bytes, hidden files, extension
         const safePath = PathValidator.validateFilePath(threadPath, filename);
 
-        // Check that the resolved path does not land in excluded directories
         const normalizedSafe = normalize(safePath);
         const normalizedThread = normalize(threadPath);
         const relativePath = normalizedSafe.slice(normalizedThread.length + 1);
@@ -194,11 +194,7 @@ async function handleReplyEmail(
         const ext = '.' + (filename.split('.').pop()?.toLowerCase() || '');
         const contentType = getContentType(ext);
 
-        validatedAttachments.push({
-          filename,
-          path: safePath,
-          contentType,
-        });
+        validatedAttachments.push({ filename, path: safePath, contentType });
         log('INFO', 'Attachment validated', { filename, safePath, contentType, size: fileStat.size });
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Unknown error';
@@ -211,142 +207,151 @@ async function handleReplyEmail(
     }
   }
 
-  // 6. Reconstruct Email object from context
-  const email = contextToEmail(emailContext);
+  // 6. Reconstruct InboundMessage from context
+  const originalMessage = contextToInboundMessage(replyContext);
 
-  // 7. Load full email body from stored received.md for quoted history in the reply.
-  //    The context only carries stripped/truncated bodyText for the AI prompt.
-  //    messages/<incomingMessageDir>/received.md has the full body including quoted history.
-  const incomingDir = emailContext.incomingMessageDir;
+  // 7. Load full message body from stored received.md for quoted history.
+  const incomingDir = replyContext.incomingMessageDir;
   if (incomingDir) {
     try {
-      // Try new messages/ structure first
       let mdPath = join(threadPath, 'messages', incomingDir, 'received.md');
       let mdContent: string;
       try {
         mdContent = await readFile(mdPath, 'utf-8');
       } catch {
-        // Fallback: try legacy .jiny/ path (pre-migration, incomingDir might be a filename)
+        // Fallback: legacy .jiny/ path
         mdPath = join(threadPath, '.jiny', incomingDir);
         mdContent = await readFile(mdPath, 'utf-8');
       }
       const fullBody = extractBodyFromMd(mdContent);
       if (fullBody) {
-        email.body.text = fullBody;
-        log('INFO', 'Loaded full body from stored email file', {
-          path: mdPath,
-          bodyLength: fullBody.length,
-        });
+        originalMessage.content.text = fullBody;
+        log('INFO', 'Loaded full body from stored message', { path: mdPath, bodyLength: fullBody.length });
       } else {
-        log('WARN', 'Could not extract body from stored email file, using context bodyText', {
-          path: mdPath,
-        });
+        log('WARN', 'Could not extract body from stored message, using context preview', { path: mdPath });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      log('WARN', 'Failed to read stored email file, using context bodyText as fallback', {
-        incomingDir,
-        error: msg,
-      });
+      log('WARN', 'Failed to read stored message, using context preview as fallback', { incomingDir, error: msg });
     }
   }
 
-  // 8. Send reply via SmtpService (reuses quoteOriginalEmail, threading headers, HTML conversion)
-  log('INFO', 'Sending reply via SMTP', {
-    to: emailContext.to,
-    subject: emailContext.subject,
+  // 8. Instantiate outbound adapter based on channel type
+  let outboundAdapter: OutboundAdapter;
+  try {
+    outboundAdapter = createOutboundAdapter(replyContext.channel, config);
+    await outboundAdapter.connect();
+    log('INFO', 'Outbound adapter created', { channel: replyContext.channel });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    log('ERROR', 'Failed to create outbound adapter', { channel: replyContext.channel, error: msg });
+    return {
+      content: [{ type: 'text' as const, text: `Error: Failed to create ${replyContext.channel} outbound adapter - ${msg}` }],
+      isError: true,
+    };
+  }
+
+  // 9. Send reply via outbound adapter
+  log('INFO', 'Sending reply', {
+    channel: replyContext.channel,
+    recipient: replyContext.recipient,
+    topic: replyContext.topic,
     messageLength: message.length,
     attachmentCount: validatedAttachments.length,
-    attachments: validatedAttachments.map(a => a.filename),
   });
 
-  const smtpService = new SmtpService(config.smtp);
   let sentMessageId: string;
   try {
-    await smtpService.connect();
-    sentMessageId = await smtpService.replyToEmail(
-      email,
+    const result = await outboundAdapter.sendReply(
+      originalMessage,
       message,
       validatedAttachments.length > 0 ? validatedAttachments : undefined,
     );
-    log('INFO', 'SMTP reply sent', { messageId: sentMessageId });
+    sentMessageId = result.messageId;
+    log('INFO', 'Reply sent', { channel: replyContext.channel, messageId: sentMessageId });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
-    log('ERROR', 'SMTP send failed', { error: msg });
+    log('ERROR', 'Send failed', { channel: replyContext.channel, error: msg });
     return {
-      content: [{ type: 'text' as const, text: `Error: Failed to send email - ${msg}` }],
+      content: [{ type: 'text' as const, text: `Error: Failed to send reply via ${replyContext.channel} - ${msg}` }],
       isError: true,
     };
   } finally {
-    await smtpService.disconnect().catch(() => {});
+    await outboundAdapter.disconnect().catch(() => {});
   }
 
-  // 8. Store reply in thread folder (reuses auto-reply.md format)
+  // 10. Store reply in thread folder
   try {
-    const storage = new EmailStorage(config.workspace);
-    await storage.storeReply(threadPath, message, email, emailContext.incomingMessageDir);
+    const storage = new MessageStorage(config.workspace);
+    await storage.storeReply(threadPath, message, replyContext.incomingMessageDir);
     log('INFO', 'Reply stored', { threadPath });
   } catch (error) {
-    // Non-fatal: email was already sent, just log the storage failure
     log('ERROR', 'Failed to store reply after sending', {
       error: error instanceof Error ? error.message : 'Unknown',
       threadPath,
     });
   }
 
-  // 9. Write signal file so the monitor knows the MCP tool sent the reply
-  //    (fallback detection in case tool parts are not returned in prompt response)
+  // 11. Write signal file
   try {
     const jinyDir = join(threadPath, '.jiny');
     await mkdir(jinyDir, { recursive: true });
     const signalFile = join(jinyDir, 'reply-sent.flag');
     const signalData = JSON.stringify({
       sentAt: new Date().toISOString(),
-      to: emailContext.to,
+      channel: replyContext.channel,
+      recipient: replyContext.recipient,
       messageId: sentMessageId,
       attachmentCount: validatedAttachments.length,
     });
     await writeFile(signalFile, signalData, 'utf-8');
     log('INFO', 'Signal file written', { signalFile });
   } catch (error) {
-    // Non-fatal: the reply was already sent
     log('WARN', 'Failed to write signal file', {
       error: error instanceof Error ? error.message : 'Unknown',
     });
   }
 
-  // 10. Return success
-  log('INFO', 'reply_email completed successfully', {
-    sentTo: emailContext.to,
+  // 12. Return success
+  log('INFO', 'reply_message completed successfully', {
+    channel: replyContext.channel,
+    recipient: replyContext.recipient,
     attachmentCount: validatedAttachments.length,
   });
 
   return {
     content: [{
       type: 'text' as const,
-      text: `Email reply sent successfully to ${emailContext.to}` +
+      text: `Reply sent successfully via ${replyContext.channel} to ${replyContext.recipient}` +
         (validatedAttachments.length > 0 ? ` with ${validatedAttachments.length} attachment(s): ${validatedAttachments.map(a => a.filename).join(', ')}` : ''),
     }],
   };
 }
 
 /**
- * Extract the email body content from a stored .jiny/*.md file.
- *
- * The .md format is:
- *   ---
- *   uid: ...
- *   message_id: "..."
- *   ---
- *
- *   ## SenderName (HH:MM PM)
- *
- *   <body content here, including full quoted history>
- *
- *   ---
- *
- * Returns the body content between the sender header and the trailing "---",
- * or null if parsing fails.
+ * Create an outbound adapter based on channel type.
+ * Loads channel-specific config from the project config.
+ */
+function createOutboundAdapter(channel: string, config: any): OutboundAdapter {
+  switch (channel) {
+    case 'email': {
+      // Support both new (channels.email.outbound) and legacy (smtp) config
+      const smtpConfig = config.channels?.email?.outbound || config.smtp;
+      if (!smtpConfig) {
+        throw new Error('SMTP/email outbound configuration not found in config');
+      }
+      return new EmailOutboundAdapter(smtpConfig);
+    }
+    // Future channels:
+    // case 'feishu': { ... }
+    // case 'slack': { ... }
+    default:
+      throw new Error(`Unsupported channel type: ${channel}`);
+  }
+}
+
+/**
+ * Extract message body from a stored received.md file.
  */
 function extractBodyFromMd(mdContent: string): string | null {
   const lines = mdContent.split('\n');
@@ -356,7 +361,6 @@ function extractBodyFromMd(mdContent: string): string | null {
   const bodyLines: string[] = [];
 
   for (const line of lines) {
-    // Skip YAML frontmatter
     if (!pastFrontmatter) {
       if (line.trimEnd() === '---') {
         if (inFrontmatter) {
@@ -369,7 +373,6 @@ function extractBodyFromMd(mdContent: string): string | null {
       continue;
     }
 
-    // Look for the ## SenderName (HH:MM) header
     if (!foundHeader) {
       if (line.startsWith('## ') && /\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(line)) {
         foundHeader = true;
@@ -377,7 +380,6 @@ function extractBodyFromMd(mdContent: string): string | null {
       continue;
     }
 
-    // Stop at the trailing "--- " or "---" separator
     if (line.trimEnd() === '---' || line.trimEnd() === '--- ') {
       break;
     }
@@ -385,11 +387,8 @@ function extractBodyFromMd(mdContent: string): string | null {
     bodyLines.push(line);
   }
 
-  if (!foundHeader || bodyLines.length === 0) {
-    return null;
-  }
+  if (!foundHeader || bodyLines.length === 0) return null;
 
-  // Trim leading/trailing blank lines but preserve internal whitespace
   const body = bodyLines.join('\n').trim();
   return body.length > 0 ? body : null;
 }
@@ -413,7 +412,7 @@ function getContentType(ext: string): string {
   return types[ext] || 'application/octet-stream';
 }
 
-// Start the MCP server with stdio transport
+// Start the MCP server
 async function main() {
   log('INFO', 'MCP Reply Tool starting', {
     cwd: process.cwd(),

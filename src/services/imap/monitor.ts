@@ -1,7 +1,6 @@
 import type { ImapConfig, WatchConfig, Pattern, OutputConfig } from '../../types';
 import { ImapClient } from './index';
 import { type ImapEmail } from './index';
-import { PatternMatcher } from '../../core/pattern-matcher';
 import { emailParser } from '../../core/email-parser';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
@@ -17,7 +16,6 @@ export interface MonitorOptions {
 
 export class EmailMonitor {
   private imapClient: ImapClient;
-  private patternMatcher: PatternMatcher;
   private watchConfig: WatchConfig;
   private outputConfig: OutputConfig;
   private folder: string;
@@ -38,7 +36,6 @@ export class EmailMonitor {
     debug: boolean = false
   ) {
     this.imapClient = new ImapClient(imapConfig, verbose, debug);
-    this.patternMatcher = new PatternMatcher(patterns);
     this.watchConfig = watchConfig;
     this.outputConfig = outputConfig;
     this.folder = folder;
@@ -219,8 +216,8 @@ export class EmailMonitor {
     }
 
     const mailbox = await (this.imapClient as any).client.mailboxOpen(this.folder);
-    const serverUidValidity = mailbox.uidValidity;
-    const stateUidValidity = StateManager.getState().uidValidity;
+    const serverUidValidity = Number(mailbox.uidValidity);
+    const stateUidValidity = Number(StateManager.getState().uidValidity);
 
     if (serverUidValidity !== stateUidValidity) {
       logger.warn('UIDVALIDITY changed, resetting UID set', {
@@ -259,24 +256,15 @@ export class EmailMonitor {
 
       logger.debug('Processing email', { from: fromAddress, subject, uid: imapEmail.uid });
 
-      const patternMatch = this.patternMatcher.match(fromAddress, subject);
-
-      if (!patternMatch) {
-        logger.debug('No pattern matched, skipping', { from: fromAddress, subject: subject.substring(0, 80) });
-        return;
-      }
-
-      logger.info('Pattern matched!', { pattern: patternMatch.patternName, from: fromAddress, subject });
-
       await StateManager.trackUid(imapEmail.uid);
 
       try {
         const emailBody = await this.imapClient.fetchMessageBody(seqNum, this.folder);
         const parsedEmail = await emailParser.parseEmail(emailBody, imapEmail.uid.toString(), imapEmail.uid);
-        parsedEmail.matchedPattern = patternMatch.patternName;
 
         if (options.onMatch) {
-          await options.onMatch(parsedEmail, patternMatch);
+          // Deliver ALL emails — filtering is handled by the inbound adapter
+          await options.onMatch(parsedEmail, { patternName: '__all__', channel: 'email', matches: {} });
         } else {
           this.displayEmail(parsedEmail);
         }
