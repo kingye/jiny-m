@@ -258,45 +258,130 @@ export { deriveThreadName, sanitizeForFilename };
  * Fixes artifacts that accumulate with each reply round in email clients:
  * 1. Bracket-nested duplicate addresses/URLs:
  *    `addr [addr] [addr [addr]]` → `addr`
- * 2. Redundant Re:/回复: prefixes in quoted 主题/Subject lines:
- *    `主题：Re: 回复: Re: 回复: ... Subject` → `主题：Re: Subject`
+ *    These brackets can span multiple lines due to line wrapping.
+ * 2. URL-encoded brackets in URLs: `[https://...%5D]` patterns
+ * 3. Redundant Re:/回复: prefixes in quoted 主題/Subject lines
  *
- * Applied once when storing received.md so all downstream consumers
- * (prompt builder, reply tool, quoted history) get clean data.
+ * Applied once at InboundAdapter boundary so all downstream consumers
+ * (storage, prompt builder, reply tool) get clean data.
  */
 export function cleanEmailBody(text: string): string {
-  return text
+  let cleaned = text;
+
+  // Step 1: Join multi-line bracket expressions into single lines.
+  // Email clients wrap long addresses/URLs causing brackets to span lines:
+  //   KINGYE@PETALMAIL.COM [KINGYE@PETALMAIL.COM\n[KINGYE@PETALMAIL.COM]]
+  // Join lines where a [ is opened but not closed on the same line.
+  cleaned = joinMultiLineBrackets(cleaned);
+
+  // Step 2: Remove all [...] blocks from each line.
+  // After joining multi-line brackets, all brackets are on single lines.
+  // Email clients add these brackets for display — they duplicate adjacent addresses/URLs
+  // and never contain original content. Safe to remove all of them.
+  cleaned = cleaned
     .split('\n')
     .map(line => {
-      let cleaned = line;
+      let result = line;
 
-      // Remove bracket-nested duplicates:
-      //   something [something] → something
-      //   something [something] [something [something]] → something
-      // Repeatedly strip trailing ` [...]` blocks that duplicate adjacent text.
+      // Remove all [...] blocks (may be nested). Work from inside out.
       let prev = '';
-      while (prev !== cleaned) {
-        prev = cleaned;
-        cleaned = cleaned.replace(/(\S+)\s+\[\S*\1\S*\]/g, '$1');
+      while (prev !== result) {
+        prev = result;
+        // Remove innermost [...] first (no [ or ] inside)
+        result = result.replace(/\s*\[[^\[\]]*\]/g, '');
       }
 
-      // Clean nested brackets like [text [text]]
-      prev = '';
-      while (prev !== cleaned) {
-        prev = cleaned;
-        cleaned = cleaned.replace(/\[([^\[\]]*)\s*\[[^\]]*\]\]/g, '[$1]');
-      }
+      // Remove orphaned unmatched [ that remain after balanced removal.
+      // These occur when the original email had unbalanced brackets.
+      result = result.replace(/\s*\[(?=[A-Za-z0-9._%+\-]+@|https?:\/\/)/g, ' ');
 
-      // Clean 主題/Subject lines in quoted history: normalize to single Re:
-      const subjectMatch = cleaned.match(/^(>*\s*)(主题[:：]\s*|Subject[:：]\s*)(.*)/i);
-      if (subjectMatch) {
-        const quotePrefix = subjectMatch[1] || '';
-        const label = subjectMatch[2] || '';
-        const subject = subjectMatch[3] || '';
-        cleaned = `${quotePrefix}${label}Re: ${stripReplyPrefix(subject)}`;
-      }
+      // Clean 主題/Subject lines: normalize to single Re:
+      // May appear at start of line (with optional > quote prefix) or mid-line after other fields
+      result = result.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
+        (_match, prefix, label, _prefixes, subject) => {
+          const cleanSubject = stripReplyPrefix(subject);
+          return `${prefix}${label}Re: ${cleanSubject}`;
+        }
+      );
 
-      return cleaned;
+      return result;
     })
     .join('\n');
+
+  // Step 3: Clean up excessive whitespace left by bracket removal
+  cleaned = cleaned.replace(/ {2,}/g, ' ');
+
+  return cleaned;
+}
+
+/**
+ * Join multi-line bracket expressions into single lines.
+ *
+ * Email clients wrap long addresses into multiple lines like:
+ *   KINGYE@PETALMAIL.COM [KINGYE@PETALMAIL.COM
+ *   [KINGYE@PETALMAIL.COM]] (05:48 PM)
+ *
+ * In quoted text, lines have `> ` prefixes:
+ *   > > 发件人：jiny283@163.com [jiny283@163.com
+ *   > > [jiny283@163.com]]
+ *
+ * This function detects lines with unbalanced brackets and joins
+ * continuation lines until the brackets are balanced.
+ */
+function joinMultiLineBrackets(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  let pendingLine = '';
+  let bracketDepth = 0;
+  let joinedCount = 0;
+  const MAX_JOIN_LINES = 10; // Safety limit for unbalanced brackets
+
+  for (const line of lines) {
+    // Strip quote prefixes (> > >) for bracket counting, but keep them in the output
+    const contentWithoutQuote = line.replace(/^(>\s*)+/, '');
+
+    if (bracketDepth > 0) {
+      // Continuation of a multi-line bracket expression
+      pendingLine += ' ' + contentWithoutQuote.trim();
+      joinedCount++;
+
+      // Safety: if we've joined too many lines, brackets are unbalanced — flush as-is
+      if (joinedCount >= MAX_JOIN_LINES) {
+        result.push(pendingLine);
+        pendingLine = '';
+        bracketDepth = 0;
+        joinedCount = 0;
+        continue;
+      }
+    } else {
+      if (pendingLine) {
+        result.push(pendingLine);
+        pendingLine = '';
+      }
+      pendingLine = line;
+      joinedCount = 0;
+    }
+
+    // Count bracket depth across the entire pending line
+    bracketDepth = 0;
+    for (const ch of pendingLine) {
+      if (ch === '[') bracketDepth++;
+      if (ch === ']') bracketDepth--;
+    }
+
+    // If brackets are balanced, flush the line
+    if (bracketDepth <= 0) {
+      result.push(pendingLine);
+      pendingLine = '';
+      bracketDepth = 0;
+      joinedCount = 0;
+    }
+  }
+
+  // Flush any remaining pending line
+  if (pendingLine) {
+    result.push(pendingLine);
+  }
+
+  return result.join('\n');
 }
