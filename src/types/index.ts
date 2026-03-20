@@ -219,6 +219,40 @@ export interface InboundAttachmentConfig {
 }
 
 // ============================================================================
+// Alerting
+// ============================================================================
+
+/** Configuration for error alerting via email. */
+export interface AlertingConfig {
+  /** Whether alerting is enabled. */
+  enabled: boolean;
+  /** Email address to send alerts to. */
+  recipient: string;
+  /** How often to flush buffered errors (in minutes, default: 5). */
+  batchIntervalMinutes?: number;
+  /** Maximum errors to include in a single alert email (default: 50). */
+  maxErrorsPerBatch?: number;
+  /** Subject prefix for alert emails (default: "Jiny-M Alert"). */
+  subjectPrefix?: string;
+  /** Whether to include reply-tool.log content in alerts (default: true). */
+  includeReplyToolLog?: boolean;
+  /** Number of lines to tail from reply-tool.log (default: 50). */
+  replyToolLogTailLines?: number;
+  /** Periodic health check email configuration. */
+  healthCheck?: HealthCheckConfig;
+}
+
+/** Configuration for periodic health check reports. */
+export interface HealthCheckConfig {
+  /** Whether health check is enabled (default: false). */
+  enabled: boolean;
+  /** How often to send health reports (in hours, default: 24). */
+  intervalHours?: number;
+  /** Recipient override (defaults to alerting.recipient). */
+  recipient?: string;
+}
+
+// ============================================================================
 // Top-level Config
 // ============================================================================
 
@@ -238,6 +272,8 @@ export interface Config {
   worker?: WorkerConfig;
   /** Reply generation settings. */
   reply: ReplyConfig;
+  /** Error alerting settings. */
+  alerting?: AlertingConfig;
   /** Output formatting. */
   output?: OutputConfig;
   /** @internal Legacy fields used during config migration. */

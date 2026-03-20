@@ -16,6 +16,7 @@ import { MessageStorage } from '../../core/message-storage';
 import { MessageRouter } from '../../core/message-router';
 import { ThreadManager } from '../../core/thread-manager';
 import { OpenCodeService } from '../../services/opencode';
+import { AlertService } from '../../core/alert-service';
 import { OutputFormatter } from '../../output';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
@@ -30,6 +31,7 @@ export interface MonitorCommandOptions {
 }
 
 let activeAdapters: Array<{ stop: () => Promise<void> }> = [];
+let activeAlertService: AlertService | null = null;
 
 export async function monitorCommand(options: MonitorCommandOptions): Promise<void> {
   let opencodeService: OpenCodeService | undefined;
@@ -73,9 +75,12 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       );
       registry.registerInbound(emailInbound);
 
-      // Outbound adapter (SMTP) — only if reply is enabled
-      const replyConfig = configManager.getReplyConfig();
-      if (replyConfig.enabled && emailConfig.outbound) {
+      // Outbound adapter (SMTP) — needed for reply and/or alerting
+      const emailReplyConfig = configManager.getReplyConfig();
+      const earlyAlertingConfig = configManager.getAlertingConfig();
+      const needsOutbound = (emailReplyConfig.enabled || earlyAlertingConfig?.enabled) && emailConfig.outbound;
+
+      if (needsOutbound) {
         const emailOutbound = new EmailOutboundAdapter(emailConfig.outbound);
         try {
           await emailOutbound.connect();
@@ -122,7 +127,23 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       patterns: channelPatterns,
     });
 
-    // 8. Create formatter for display
+    // 8. Start AlertService (if configured, now that ThreadManager exists for queue stats)
+    const alertingConfig = configManager.getAlertingConfig();
+    if (alertingConfig?.enabled) {
+      try {
+        const emailOutbound = registry.getOutbound('email');
+        const workspaceFolder = configManager.getWorkspaceConfig().folder;
+        const alertService = new AlertService(emailOutbound, alertingConfig, workspaceFolder, threadManager);
+        alertService.start();
+        activeAlertService = alertService;
+      } catch {
+        logger.warn('AlertService not started: no email outbound adapter registered', {
+          _alertInternal: true,
+        });
+      }
+    }
+
+    // 9. Create formatter for display
     const outputConfig = configManager.getOutputConfig();
     const formatter = new OutputFormatter({
       format: outputConfig.format,
@@ -171,6 +192,10 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 // Graceful shutdown handler
 process.on('SIGINT', async () => {
   logger.info('Shutting down...');
+  if (activeAlertService) {
+    try { await activeAlertService.stop(); } catch {}
+    activeAlertService = null;
+  }
   for (const adapter of activeAdapters) {
     try { await adapter.stop(); } catch {}
   }
@@ -179,6 +204,10 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   logger.info('Shutting down...');
+  if (activeAlertService) {
+    try { await activeAlertService.stop(); } catch {}
+    activeAlertService = null;
+  }
   for (const adapter of activeAdapters) {
     try { await adapter.stop(); } catch {}
   }

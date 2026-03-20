@@ -47,6 +47,23 @@ export class EmailOutboundAdapter implements OutboundAdapter {
   }
 
   /**
+   * Send a fresh (non-reply) alert email.
+   * Uses SmtpService.sendMail() — no Re: prefix, no threading headers.
+   */
+  async sendAlert(
+    recipient: string,
+    subject: string,
+    body: string,
+  ): Promise<{ messageId: string }> {
+    const messageId = await this.smtpService.sendMail({
+      to: recipient,
+      subject,
+      text: body,
+    });
+    return { messageId };
+  }
+
+  /**
    * Get the underlying SmtpService (for direct access when needed,
    * e.g. by the MCP reply tool which needs low-level control).
    */
