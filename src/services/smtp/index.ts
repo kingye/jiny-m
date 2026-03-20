@@ -3,13 +3,32 @@ import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
 
-// Configure marked to preserve HTML tags
+// Configure marked: preserve HTML tags and disable auto-linking.
+// Auto-linking email addresses/URLs causes bracket nesting when the
+// recipient's email client converts <a href="mailto:...">ADDR</a>
+// back to plain text as "ADDR [addr]" — each round-trip adds a layer.
 marked.use({
   renderer: {
     html(src) {
       return typeof src === 'string' ? src : String(src);
-    }
-  }
+    },
+    // Render auto-detected URLs/emails as plain text, not <a> tags
+    link({ href, text }) {
+      // If the link text matches the href (auto-linked), render as plain text
+      const hrefClean = href.replace(/^mailto:/, '');
+      if (text === href || text === hrefClean) {
+        return text;
+      }
+      // For explicit markdown links [text](url), keep the <a> tag
+      return `<a href="${href}">${text}</a>`;
+    },
+  },
+  tokenizer: {
+    // Disable auto-detection of URLs in text
+    url(_src: string) {
+      return undefined as any; // Return undefined to skip auto-linking
+    },
+  },
 });
 
 export interface ReplyOptions {

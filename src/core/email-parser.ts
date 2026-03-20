@@ -255,112 +255,30 @@ export { deriveThreadName, sanitizeForFilename };
 /**
  * Clean up email body text at ingest time.
  *
- * Fixes artifacts that accumulate with each reply round in email clients:
- * 1. Bracket-nested duplicate addresses/URLs:
- *    `addr [addr] [addr [addr]]` → `addr`
- *    These brackets can span multiple lines due to line wrapping.
- * 2. URL-encoded brackets in URLs: `[https://...%5D]` patterns
- * 3. Redundant Re:/回复: prefixes in quoted 主題/Subject lines
+ * Fixes redundant Re:/回复: prefixes in quoted 主題/Subject lines
+ * within the email body.
+ *
+ * Note: bracket-nested duplicate addresses/URLs (e.g. `addr [addr]`) are
+ * NOT cleaned here. The root cause was `marked.parse()` auto-linking email
+ * addresses into `<a>` tags, which recipients' email clients converted to
+ * `ADDR [addr]` in plain text. This is fixed at the source by disabling
+ * auto-linking in SmtpService.markdownToHtml().
  *
  * Applied once at InboundAdapter boundary so all downstream consumers
  * (storage, prompt builder, reply tool) get clean data.
  */
 export function cleanEmailBody(text: string): string {
-  let cleaned = text;
-
-  // Step 1: Join bracket continuation lines.
-  // When a line has unbalanced [ and the NEXT line starts with [ (after > prefix),
-  // that next line is a bracket continuation — join it to the current line.
-  // This is safe because real content lines never start with [.
-  cleaned = joinBracketContinuations(cleaned);
-
-  // Step 2: Remove [...] blocks that contain email addresses or URLs, line by line.
-  // Only remove brackets whose content looks like an address/URL duplicate.
-  // Preserve brackets with other content (text notes, array syntax, references, etc.)
-  cleaned = cleaned
+  return text
     .split('\n')
     .map(line => {
-      let result = line;
-
-      // Repeatedly remove innermost [...] blocks that contain email addresses or URLs
-      let prev = '';
-      while (prev !== result) {
-        prev = result;
-        // Remove [email@domain...] blocks (may contain nested brackets already removed)
-        result = result.replace(/\s*\[([^\[\]]*@[^\[\]]*)\]/g, (match, content) => {
-          // Only remove if content looks like an email address pattern
-          if (/^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+/.test(content.trim())) return '';
-          return match; // preserve non-email brackets
-        });
-        // Remove [https://...] or [http://...] blocks
-        result = result.replace(/\s*\[([^\[\]]*)\]/g, (match, content) => {
-          const trimmed = content.trim();
-          if (/^https?:\/\//.test(trimmed)) return '';
-          if (/%5[BD]/i.test(trimmed)) return ''; // URL-encoded brackets
-          return match; // preserve non-URL brackets
-        });
-      }
-
-      // Remove orphaned [ before email addresses/URLs (from unbalanced brackets)
-      result = result.replace(/\s*\[(?=[A-Za-z0-9._%+\-]+@|https?:\/\/)/g, ' ');
-
-      // Remove orphaned ] that appear right after an email address or at line start
-      // (leftover from multi-line bracket removal)
-      result = result.replace(/(@[A-Za-z0-9.\-]+)\s*\]+/g, '$1');
-      result = result.replace(/^\s*\]+\s*/g, '');
-
       // Clean 主題/Subject lines: normalize to single Re:
-      result = result.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
+      // May appear at start of line (with optional > quote prefix) or mid-line
+      return line.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
         (_match, prefix, label, _prefixes, subject) => {
           const cleanSubject = stripReplyPrefix(subject);
           return `${prefix}${label}Re: ${cleanSubject}`;
         }
       );
-
-      return result;
     })
     .join('\n');
-
-  // Step 3: Remove lines that became empty after cleanup (just whitespace or quote prefix)
-  cleaned = cleaned.replace(/^(>\s*)+$/gm, '>');
-  // Clean up excessive whitespace
-  cleaned = cleaned.replace(/ {2,}/g, ' ');
-
-  return cleaned;
-}
-
-/**
- * Join bracket continuation lines into the preceding line.
- *
- * When a line ends with unbalanced brackets and the next line starts with `[`
- * (after optional `> ` quote prefixes), that next line is a continuation of the
- * bracket expression — not real content. Join it to the current line.
- *
- * This is safe because actual content lines never start with `[` in email bodies.
- */
-function joinBracketContinuations(text: string): string {
-  const lines = text.split('\n');
-  const result: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    let current = lines[i]!;
-
-    // Keep joining next lines as long as they start with [ (after quote prefix)
-    while (i + 1 < lines.length) {
-      const nextLine = lines[i + 1]!;
-      // Strip quote prefix to check if the content starts with [
-      const nextContent = nextLine.replace(/^(>\s*)*/, '').trim();
-      if (nextContent.startsWith('[')) {
-        // It's a bracket continuation — join it
-        current += ' ' + nextContent;
-        i++;
-      } else {
-        break;
-      }
-    }
-
-    result.push(current);
-  }
-
-  return result.join('\n');
 }
