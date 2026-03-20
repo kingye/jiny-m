@@ -88,38 +88,20 @@ export function serializeContext(
 }
 
 /**
- * Deserialize a context JSON string and validate required fields.
- * Includes JSON sanitization for common AI-generated corruption.
+ * Validate a context object (already parsed) and return a typed ReplyContext.
+ * Used when the AI passes context as a JSON object via MCP tool calling.
  */
-export function deserializeAndValidateContext(contextJson: string): ReplyContext {
-  let context: ReplyContext;
-
-  // First attempt: parse as-is
-  try {
-    context = JSON.parse(contextJson);
-  } catch (firstError) {
-    // Second attempt: sanitize common AI-generated JSON issues
-    try {
-      const sanitized = sanitizeContextJson(contextJson);
-      context = JSON.parse(sanitized);
-    } catch {
-      const preview = contextJson?.substring(0, 300) || '(empty)';
-      throw new Error(`Invalid context JSON: failed to parse. Preview: ${preview}`);
-    }
-  }
-
-  // Required fields
+export function validateContext(context: Record<string, any>): ReplyContext {
   if (!context.threadName || !context.recipient || !context.sender || !context.topic) {
-    const missing = ['threadName', 'recipient', 'sender', 'topic'].filter(f => !(context as any)[f]);
+    const missing = ['threadName', 'recipient', 'sender', 'topic'].filter(f => !context[f]);
     throw new Error(`Invalid context: missing required fields: ${missing.join(', ')}`);
   }
 
-  // Default channel to "email" for backward compatibility
   if (!context.channel) {
     context.channel = 'email';
   }
 
-  return context;
+  return context as ReplyContext;
 }
 
 /**
@@ -148,104 +130,4 @@ export function contextToInboundMessage(context: ReplyContext): InboundMessage {
     externalId: context.externalId,
     metadata: context.channelMetadata || {},
   };
-}
-
-/**
- * Sanitize common AI-generated JSON issues.
- */
-function sanitizeContextJson(json: string): string {
-  let sanitized = json;
-
-  // Strip <reply_context>...</reply_context> wrapper tags if the AI included them
-  sanitized = sanitized.replace(/^[\s]*<reply_context>\s*/i, '');
-  sanitized = sanitized.replace(/\s*<\/reply_context>[\s]*$/i, '');
-
-  // Fix smart quotes
-  sanitized = sanitized
-    .replace(/\u201C/g, '\\"')  // " left double quotation mark
-    .replace(/\u201D/g, '\\"')  // " right double quotation mark
-    .replace(/\u201E/g, '\\"')  // „ double low-9 quotation mark
-    .replace(/\u00AB/g, '\\"')  // « left-pointing double angle
-    .replace(/\u00BB/g, '\\"'); // » right-pointing double angle
-
-  // Remove trailing commas
-  try {
-    sanitized = sanitized.replace(/,\s*([}\]])/g, '$1');
-  } catch { /* ignore */ }
-
-  // Repair truncated JSON — if the AI cut off the context string mid-way,
-  // try to close open strings, arrays, and objects so JSON.parse succeeds.
-  // Only attempt this if the JSON doesn't already end with }
-  if (!sanitized.trimEnd().endsWith('}')) {
-    sanitized = repairTruncatedJson(sanitized);
-  }
-
-  return sanitized;
-}
-
-/**
- * Attempt to repair truncated JSON by closing open structures.
- * Tracks open braces/brackets/quotes and appends closing characters.
- */
-function repairTruncatedJson(json: string): string {
-  let repaired = json;
-
-  // If we're inside an unclosed string, close it
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < repaired.length; i++) {
-    const ch = repaired[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-    }
-  }
-  if (inString) {
-    repaired += '"';
-  }
-
-  // Remove any trailing partial key-value (e.g. ,"someKey": or ,"someKey":"partial)
-  // by stripping back to the last complete value
-  repaired = repaired.replace(/,\s*"[^"]*"\s*:?\s*"?[^"]*$/, '');
-  repaired = repaired.replace(/,\s*"[^"]*"\s*$/, '');
-  repaired = repaired.replace(/,\s*$/, '');
-
-  // Count open braces and brackets, close them
-  let openBraces = 0;
-  let openBrackets = 0;
-  inString = false;
-  escaped = false;
-  for (let i = 0; i < repaired.length; i++) {
-    const ch = repaired[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') openBraces++;
-    if (ch === '}') openBraces--;
-    if (ch === '[') openBrackets++;
-    if (ch === ']') openBrackets--;
-  }
-
-  // Close open structures
-  for (let i = 0; i < openBrackets; i++) repaired += ']';
-  for (let i = 0; i < openBraces; i++) repaired += '}';
-
-  return repaired;
 }

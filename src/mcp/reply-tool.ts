@@ -16,7 +16,7 @@ import { join, normalize } from 'node:path';
 import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { appendFileSync, mkdirSync } from 'node:fs';
 
-import { deserializeAndValidateContext, contextToInboundMessage } from './context';
+import { validateContext, contextToInboundMessage } from './context';
 import type { ReplyContext } from './context';
 import type { OutboundAdapter, InboundMessage } from '../channels/types';
 import { ConfigManager } from '../config';
@@ -61,29 +61,24 @@ server.tool(
   'Send a reply message back through the originating channel. Handles quoting, threading, and reply storage. Attachments must be files within the thread directory (excluding .opencode and .jiny directories).',
   {
     message: z.string().describe('The reply text to send'),
-    context: z.union([z.record(z.string(), z.any()), z.string()]).describe('The reply context from the <reply_context> block in the user message. Can be passed as JSON object or string.'),
+    context: z.record(z.string(), z.any()).describe('The reply context from the <reply_context> block in the user message'),
     attachments: z.array(z.string()).optional().describe('Optional list of filenames within the thread directory to attach'),
   },
-  async ({ message, context: contextRaw, attachments: attachmentFilenames }) => {
-    // Normalize context: AI may pass it as a JSON object instead of a string
-    const contextJson: string = typeof contextRaw === 'string'
-      ? contextRaw
-      : JSON.stringify(contextRaw);
+  async ({ message, context, attachments: attachmentFilenames }) => {
+    const contextPreview = JSON.stringify(context).substring(0, 200);
 
     log('INFO', 'reply_message tool called', {
       messageLength: message?.length,
       messagePreview: message ? message.substring(0, 100) : '(empty)',
-      hasContext: !!contextJson,
-      contextType: typeof contextRaw,
-      contextLength: contextJson?.length || 0,
-      contextPreview: contextJson ? contextJson.substring(0, 200) : '(empty)',
+      hasContext: !!context,
+      contextPreview: contextPreview || '(empty)',
       attachments: attachmentFilenames || [],
       cwd: process.cwd(),
       JINY_ROOT: process.env.JINY_ROOT || 'not set',
     });
 
     try {
-      const result = await handleReplyMessage(message, contextJson, attachmentFilenames);
+      const result = await handleReplyMessage(message, context, attachmentFilenames);
       // Log final outcome clearly
       const isError = result.isError === true;
       const text = result.content?.[0]?.text || '';
@@ -105,13 +100,13 @@ server.tool(
 
 async function handleReplyMessage(
   message: string,
-  contextJson: string,
+  contextObj: Record<string, any>,
   attachmentFilenames?: string[],
 ) {
-  // 1. Validate context
+  // 1. Validate context — already a parsed object, just validate required fields
   let replyContext: ReplyContext;
   try {
-    replyContext = deserializeAndValidateContext(contextJson);
+    replyContext = validateContext(contextObj);
     log('INFO', 'Context validated', {
       channel: replyContext.channel,
       recipient: replyContext.recipient,
@@ -122,8 +117,7 @@ async function handleReplyMessage(
     const msg = error instanceof Error ? error.message : 'Unknown validation error';
     log('ERROR', 'Context validation failed', {
       error: msg,
-      contextLength: contextJson?.length,
-      contextPreview: contextJson?.substring(0, 500),
+      contextPreview: JSON.stringify(contextObj).substring(0, 500),
     });
     return {
       content: [{ type: 'text' as const, text: `Error: Context validation failed - ${msg}` }],
