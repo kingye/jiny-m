@@ -667,7 +667,9 @@ export class OpenCodeService {
                   // even when the MCP tool returns isError: true
                   const output = (part.state?.output || '').toString();
                   logger.info('Reply tool output', { output: output.substring(0, 300) });
-                  if (output.toLowerCase().startsWith('error')) {
+                  const isErrorOutput = output.toLowerCase().startsWith('error') ||
+                    output.toLowerCase().startsWith('mcp error');
+                  if (isErrorOutput) {
                     logger.error('Reply tool completed with error output', {
                       tool: part.tool,
                       output: output.substring(0, 300),
@@ -895,7 +897,9 @@ export class OpenCodeService {
         // Check the output field for error indicators.
         if (partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
           const output = (part.state?.output || '').toString();
-          if (output.toLowerCase().startsWith('error')) {
+          const isErrorOutput = output.toLowerCase().startsWith('error') ||
+            output.toLowerCase().startsWith('mcp error');
+          if (isErrorOutput) {
             logger.error('Reply tool completed with error output (post-hoc)', {
               tool: toolId,
               output: output.substring(0, 300),
