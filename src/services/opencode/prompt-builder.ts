@@ -45,10 +45,17 @@ export class PromptBuilder {
     parts.push('## Reply Instructions');
     parts.push('When you need to reply to a message, you MUST use the jiny_reply_reply_message tool.');
     parts.push('The reply context is provided in a <reply_context>JSON</reply_context> block in the user message.');
-    parts.push('CRITICAL: Copy the ENTIRE JSON string between <reply_context> and </reply_context> tags and pass it EXACTLY as-is to the `context` parameter. Do NOT modify, summarize, or reconstruct the context JSON. It must be passed character-for-character as it appears.');
-    parts.push('Pass your reply text as the `message` parameter.');
-    parts.push('If you need to attach files from the working directory, pass their filenames in the `attachments` parameter.');
-    parts.push('After calling jiny_reply_reply_message successfully, you are DONE. Do NOT call any other tools or perform any further actions. Just provide a brief confirmation message.');
+    parts.push('');
+    parts.push('CRITICAL RULES for calling jiny_reply_reply_message:');
+    parts.push('1. The `context` parameter MUST be the raw JSON string from inside the <reply_context> tags.');
+    parts.push('   - Copy ONLY the JSON object: starts with { and ends with }');
+    parts.push('   - Do NOT include the <reply_context> or </reply_context> tags themselves');
+    parts.push('   - Do NOT modify, reformat, summarize, or reconstruct the JSON in any way');
+    parts.push('   - Do NOT add or remove any fields, fix quotes, or change values');
+    parts.push('   - Pass it character-for-character EXACTLY as it appears between the tags');
+    parts.push('2. The `message` parameter is your reply text.');
+    parts.push('3. If you need to attach files, pass filenames in the `attachments` parameter.');
+    parts.push('4. After calling jiny_reply_reply_message successfully, you are DONE. Do NOT call any other tools. Just confirm.');
 
     return parts.join('\n');
   }
