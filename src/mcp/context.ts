@@ -6,8 +6,9 @@
  * 2. Reconstruct the original message for reply threading
  * 3. Find the stored message file for quoted history (via `incomingMessageDir`)
  *
- * The context is embedded in the AI prompt as <reply_context>JSON</reply_context>.
- * The AI passes it as a JSON object to the reply_message tool's `context` parameter.
+ * The context is base64-encoded and embedded in the AI prompt as
+ * <reply_context>BASE64_TOKEN</reply_context>. The AI passes the opaque
+ * token as a string to the reply_message tool, which decodes and validates it.
  */
 
 import type { InboundMessage, ChannelType } from '../channels/types';
