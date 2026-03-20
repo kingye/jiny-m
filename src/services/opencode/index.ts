@@ -619,7 +619,7 @@ export class OpenCodeService {
                   // even when the MCP tool returns isError: true
                   const output = (part.state?.output || '').toString();
                   if (output.toLowerCase().startsWith('error')) {
-                    logger.warn('Reply tool completed with error output', {
+                    logger.error('Reply tool completed with error output', {
                       tool: part.tool,
                       output: output.substring(0, 300),
                     });
@@ -630,7 +630,7 @@ export class OpenCodeService {
                     });
                   }
                 } else if (toolStatus === 'error') {
-                  logger.warn('Reply tool call failed', {
+                  logger.error('Reply tool call failed', {
                     tool: part.tool,
                     error: part.state?.error,
                   });
@@ -847,7 +847,7 @@ export class OpenCodeService {
         if (partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
           const output = (part.state?.output || '').toString();
           if (output.toLowerCase().startsWith('error')) {
-            logger.warn('Reply tool completed with error output (post-hoc)', {
+            logger.error('Reply tool completed with error output (post-hoc)', {
               tool: toolId,
               output: output.substring(0, 300),
             });
