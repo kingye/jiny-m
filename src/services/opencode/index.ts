@@ -1,30 +1,23 @@
 import { join, basename, resolve, dirname } from 'node:path';
-import { readdir, readFile as fsReadFile, mkdir, unlink, access, stat } from 'node:fs/promises';
+import { readFile as fsReadFile, mkdir, unlink, access } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
-import type { OpenCodeConfig, ThreadSession, Email, AiGeneratedReply, GeneratedFile } from '../../types';
+import type { OpenCodeConfig, ThreadSession, AiGeneratedReply, GeneratedFile, InboundMessage } from '../../types';
 import { logger } from '../../core/logger';
-import { stripReplyPrefix as stripReplyPrefixes } from '../../utils/helpers';
-import { stripQuotedHistory, truncateText } from '../../core/email-parser';
-import { serializeContext } from '../../mcp/context';
+import { PromptBuilder } from './prompt-builder';
 
 type OpenCodeClient = ReturnType<typeof createOpencodeClient>;
 
-const MAX_FILES_IN_CONTEXT = 10;
-const MAX_EMAIL_REPLY_FILES = 2;
-const MAX_BODY_IN_PROMPT = 2000;
-const MAX_PER_FILE = 400;
-const MAX_TOTAL_CONTEXT = 2000;
-const MAX_TOTAL_PROMPT = 6000;
-
 export class OpenCodeService {
   private config: OpenCodeConfig;
+  private promptBuilder: PromptBuilder;
   private server: { close: () => void } | null = null;
   private client: OpenCodeClient | null = null;
   private port: number | null = null;
 
   constructor(config: OpenCodeConfig) {
     this.config = config;
+    this.promptBuilder = new PromptBuilder(config);
   }
 
   private async ensureServerStarted(): Promise<void> {
@@ -221,7 +214,7 @@ export class OpenCodeService {
     });
   }
 
-  async generateReply(email: Email, threadPath: string, messageDir?: string): Promise<AiGeneratedReply> {
+  async generateReply(message: InboundMessage, threadPath: string, messageDir?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
 
     if (!this.client) {
@@ -243,8 +236,8 @@ export class OpenCodeService {
       session = await this.getOrCreateSession(threadPath);
     }
 
-    const systemPrompt = this.buildSystemPrompt(threadPath);
-    const prompt = await this.buildPrompt(email, threadPath, messageDir);
+    const systemPrompt = this.promptBuilder.buildSystemPrompt(threadPath);
+    const prompt = await this.promptBuilder.buildPrompt(message, threadPath, messageDir);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });
 
@@ -381,210 +374,6 @@ export class OpenCodeService {
     const stateDir = join(threadPath, '.jiny');
     const sessionFile = join(stateDir, 'session.json');
     await Bun.write(sessionFile, JSON.stringify(session, null, 2));
-  }
-
-  private buildSystemPrompt(threadPath: string): string {
-    const parts: string[] = [];
-
-    if (this.config.systemPrompt) {
-      parts.push(this.config.systemPrompt);
-      parts.push('');
-    }
-
-    parts.push(`Your working directory is "${threadPath}". You MUST only read, write, and access files within this directory. Do NOT access files outside this directory.`);
-    parts.push('');
-    parts.push('## Email Reply Instructions');
-    parts.push('When you need to reply to an email, you MUST use the jiny_reply_reply_email tool.');
-    parts.push('The email context is provided in a <reply_context>JSON</reply_context> block in the user message.');
-    parts.push('CRITICAL: Copy the ENTIRE JSON string between <reply_context> and </reply_context> tags and pass it EXACTLY as-is to the `context` parameter. Do NOT modify, summarize, or reconstruct the context JSON. It must be passed character-for-character as it appears.');
-    parts.push('Pass your reply text as the `message` parameter.');
-    parts.push('If you need to attach files from the working directory, pass their filenames in the `attachments` parameter.');
-    parts.push('After calling jiny_reply_reply_email successfully, you are DONE. Do NOT call any other tools or perform any further actions. Just provide a brief confirmation message.');
-
-    return parts.join('\n');
-  }
-
-  private async buildPrompt(email: Email, threadPath: string, messageDir?: string): Promise<string> {
-    const parts: string[] = [];
-    const threadName = basename(threadPath);
-
-    if (this.config.includeThreadHistory !== false) {
-      const threadContext = await this.buildPromptContext(threadPath);
-      if (threadContext) {
-        parts.push('## Conversation history (most recent messages):');
-        parts.push(threadContext);
-        parts.push('');
-      }
-    }
-
-    let emailBody = email.body.text || email.body.html || '';
-    emailBody = stripQuotedHistory(emailBody);
-
-    if (emailBody.length > MAX_BODY_IN_PROMPT) {
-      emailBody = truncateText(emailBody, MAX_BODY_IN_PROMPT);
-    }
-
-    const cleanSubject = stripReplyPrefixes(email.subject);
-
-    parts.push('## Incoming Email');
-    parts.push(`**From:** ${email.from}`);
-    parts.push(`**Subject:** ${cleanSubject}`);
-    parts.push(`**Date:** ${email.date.toISOString()}`);
-    parts.push('');
-    parts.push(`**Body:**`);
-    parts.push(emailBody);
-
-    // Truncate the conversation content BEFORE appending reply context
-    let conversationPrompt = parts.join('\n');
-
-    const contextBudget = 500;
-    const conversationBudget = MAX_TOTAL_PROMPT - contextBudget;
-
-    if (conversationPrompt.length > conversationBudget) {
-      logger.warn('Conversation prompt exceeds budget, truncating', {
-        promptLength: conversationPrompt.length,
-        budget: conversationBudget,
-      });
-      conversationPrompt = truncateText(conversationPrompt, conversationBudget);
-    }
-
-    // Append reply context (AFTER truncation so it is never cut)
-    const replyContext = serializeContext(email, threadName, messageDir);
-    const contextBlock = '\n\n<reply_context>' + replyContext + '</reply_context>';
-
-    const prompt = conversationPrompt + contextBlock;
-
-    logger.debug('Prompt composition', {
-      conversationLength: conversationPrompt.length,
-      contextLength: contextBlock.length,
-      totalLength: prompt.length,
-    });
-
-    return prompt;
-  }
-
-  private async buildPromptContext(threadPath: string): Promise<string> {
-    try {
-      const messagesDir = join(threadPath, 'messages');
-      let messageDirs: string[];
-
-      try {
-        const entries = await readdir(messagesDir, { withFileTypes: true });
-        messageDirs = entries
-          .filter(dirent => dirent.isDirectory())
-          .filter(dirent => !dirent.name.startsWith('.'))
-          .map(dirent => dirent.name)
-          .sort()
-          .slice(-MAX_FILES_IN_CONTEXT);
-      } catch {
-        // Fallback: try legacy .jiny/*.md structure (pre-migration)
-        return this.buildPromptContextLegacy(threadPath);
-      }
-
-      if (messageDirs.length === 0) {
-        // Try legacy as fallback
-        return this.buildPromptContextLegacy(threadPath);
-      }
-
-      const contextParts: string[] = [];
-      let totalLength = 0;
-
-      for (const dirName of messageDirs) {
-        const dirPath = join(messagesDir, dirName);
-
-        // Read received.md
-        try {
-          const receivedPath = join(dirPath, 'received.md');
-          const content = await fsReadFile(receivedPath, 'utf-8');
-          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
-          const trimmedContent = trimEmailReplyContent('received.md', fileContent);
-          const strippedContent = stripQuotedHistory(trimmedContent);
-          totalLength += strippedContent.length;
-
-          if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(strippedContent);
-            break;
-          }
-          contextParts.push(strippedContent);
-        } catch {
-          // No received.md in this dir — skip
-        }
-
-        if (totalLength > MAX_TOTAL_CONTEXT) break;
-
-        // Read reply.md
-        try {
-          const replyPath = join(dirPath, 'reply.md');
-          const content = await fsReadFile(replyPath, 'utf-8');
-          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
-          const trimmedContent = trimEmailReplyContent('reply.md', fileContent);
-          totalLength += trimmedContent.length;
-
-          if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(trimmedContent);
-            break;
-          }
-          contextParts.push(trimmedContent);
-        } catch {
-          // No reply.md — skip
-        }
-
-        if (totalLength > MAX_TOTAL_CONTEXT) break;
-      }
-
-      return contextParts.join('\n\n');
-    } catch (error) {
-      logger.debug('Failed to build prompt context', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      return '';
-    }
-  }
-
-  /**
-   * Legacy: read from .jiny/*.md for threads not yet migrated.
-   */
-  private async buildPromptContextLegacy(threadPath: string): Promise<string> {
-    try {
-      const stateDir = join(threadPath, '.jiny');
-      const entries = await readdir(stateDir, { withFileTypes: true });
-
-      const allFiles = entries
-        .filter(dirent => dirent.isFile())
-        .filter(dirent => !dirent.name.startsWith('.'))
-        .filter(dirent => dirent.name !== '.opencode')
-        .filter(dirent => dirent.name.endsWith('.md'))
-        .map(dirent => dirent.name)
-        .sort()
-        .slice(-MAX_FILES_IN_CONTEXT);
-
-      if (allFiles.length === 0) return '';
-
-      const contextParts: string[] = [];
-      let totalLength = 0;
-
-      for (const fileName of allFiles) {
-        try {
-          const content = await fsReadFile(join(stateDir, fileName), 'utf-8');
-          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
-          const trimmedContent = trimEmailReplyContent(fileName, fileContent);
-          const strippedContent = stripQuotedHistory(trimmedContent);
-          totalLength += strippedContent.length;
-
-          if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(strippedContent);
-            break;
-          }
-          contextParts.push(strippedContent);
-        } catch {
-          // skip unreadable files
-        }
-      }
-
-      return contextParts.join('\n\n');
-    } catch {
-      return '';
-    }
   }
 
   private extractAiReply(parts: Array<{ type: string; text?: string; filename?: string; url?: string; mime?: string }>): AiGeneratedReply {
@@ -1110,28 +899,4 @@ export class OpenCodeService {
     return { toolCommand: ['bun', 'run', toolPath] };
   }
 
-}
-
-function trimEmailReplyContent(fileName: string, content: string): string {
-  const lines = content.split('\n');
-  let isEmailBody = false;
-  const replyLines: string[] = [];
-
-  for (const line of lines) {
-    if (typeof line !== 'string') continue;
-
-    if (isEmailBody) {
-      if (line.startsWith('================================================================================')) {
-        break;
-      }
-      replyLines.push(line);
-    } else if (line.includes('__ ')) {
-      continue;
-    } else if (line.startsWith('## ') && line.match(/## .+ \(\d{1,2}:\d{2} [AP]M\)/)) {
-      isEmailBody = true;
-      continue;
-    }
-  }
-
-  return replyLines.join('\n').trim();
 }
