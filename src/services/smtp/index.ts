@@ -2,12 +2,6 @@ import nodemailer from 'nodemailer';
 import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
-import TurndownService from 'turndown';
-
-const turndownService = new TurndownService({
-  headingStyle: 'atx',
-  codeBlockStyle: 'fenced',
-});
 
 // Configure marked to preserve HTML tags
 marked.use({
@@ -240,6 +234,10 @@ export class SmtpService {
     });
   }
 
+  /**
+   * Reply to an email. Receives the full reply text (already includes quoted history).
+   * Just adds threading headers and sends — no content transformation.
+   */
   async replyToEmail(
     email: Email,
     replyText: string,
@@ -247,75 +245,15 @@ export class SmtpService {
   ): Promise<string> {
     const toAddress = email.headers['reply-to'] || email.from;
 
-    const quotedOriginalEmail = this.quoteOriginalEmail(email);
-    const fullReplyText = `${replyText}\n\n${quotedOriginalEmail}`;
-
     return this.sendReply({
       to: toAddress,
       subject: email.subject,
-      text: fullReplyText,
+      text: replyText,
       inReplyTo: email.messageId,
       references: email.references,
       messageId: email.messageId,
       attachments: attachments || [],
     });
-  }
-
-  private quoteOriginalEmail(email: Email): string {
-    const lines: string[] = [];
-
-    // Format time — handle Invalid Date gracefully
-    let timeStr: string;
-    try {
-      const d = email.date;
-      timeStr = (d instanceof Date && !isNaN(d.getTime()))
-        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    // Extract clean display name from the "from" field.
-    // Handle formats like: "Name" <addr>, Name <addr>, addr, or nested brackets
-    let fromName = email.from || 'Unknown';
-    if (fromName.includes('<')) {
-      fromName = fromName.split('<')[0]?.trim().replace(/['"]/g, '') || fromName;
-    }
-    // Remove any leftover bracket nesting from previous quoting
-    fromName = fromName.replace(/\s*\[.*$/, '').trim();
-    if (!fromName) fromName = email.from || 'Unknown';
-
-    // Subject is already cleaned at ingest time (no redundant Re:/回复: prefixes)
-    const cleanSubject = email.subject;
-
-    // Quote only the NEW content from the sender's message (strip previous quoted history).
-    // This prevents exponential nesting of quoted blocks and email address repetition.
-    let bodyText: string | undefined;
-    if (email.body.text) {
-      bodyText = email.body.text;
-    } else if (email.body.html) {
-      bodyText = turndownService.turndown(email.body.html);
-    }
-
-    // Only include quoted block if there's actual content
-    const bodyContent = bodyText?.trim() || '';
-    if (!bodyContent) {
-      return ''; // No body to quote — skip quoted block entirely
-    }
-
-    // Chat-style quoted message header
-    lines.push('---');
-    lines.push(`### ${fromName} (${timeStr})`);
-    lines.push('> ' + cleanSubject);
-    lines.push('');
-
-    const quotedBody = bodyContent
-      .split('\n')
-      .map((line: string) => `> ${line}`)
-      .join('\n');
-    lines.push(quotedBody);
-
-    return lines.join('\n');
   }
 
   private markdownToHtml(markdown: string): string {

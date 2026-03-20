@@ -127,6 +127,65 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 11. **Security Module** - Path validation, file size/extension checks for attachments
 12. **Alert Service** - Error alert digests + periodic health check reports via email
 
+### Design Principles: Component Responsibilities
+
+Each component has a single, clear responsibility. Data flows through the system with transformations happening at well-defined boundaries.
+
+**InboundAdapter** (e.g., `EmailInboundAdapter`)
+- Boundary between the external world and the internal system
+- Parses raw data from the channel (e.g., raw email from IMAP)
+- Cleans and normalizes data at the boundary: strips redundant `Re:/回复:` from subject, cleans bracket-nested duplicates and redundant prefixes in body (`cleanEmailBody`)
+- Produces a clean `InboundMessage` — all downstream consumers receive clean data without needing to clean it themselves
+
+**MessageStorage**
+- Pure storage: reads and writes files to disk
+- No transformation, no cleaning, no business logic
+- Stores `received.md` and `reply.md` exactly as given
+- `received.md` = the clean inbound message (cleaned by InboundAdapter)
+- `reply.md` = the full reply as sent (built by Reply Tool)
+
+**PromptBuilder**
+- Read-only consumer of stored data
+- Reads `received.md` and `reply.md` for conversation history
+- Strips quoted history (`stripQuotedHistory`) and truncates to fit AI token budget
+- Builds the user prompt with stripped body + opaque base64 context token
+- The context token contains only metadata references (`incomingMessageDir`), never real content
+
+**Reply Tool** (MCP `reply_message`)
+- Orchestrator for the reply flow
+- Decodes the opaque context token to get metadata (channel, recipient, `incomingMessageDir`, etc.)
+- Reads `received.md` to get the full message body (the clean source of truth)
+- Builds the full reply in markdown: AI reply text + quoted history (`formatQuotedReply`)
+- Delegates sending to OutboundAdapter/SmtpService (passes the full markdown reply)
+- Delegates storage to MessageStorage (stores the same full reply as `reply.md`)
+- `reply.md` reflects exactly what was sent to the recipient
+
+**SmtpService** (and other transport services)
+- Dumb transport: receives markdown, converts to HTML, adds email headers, sends
+- Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
+- Does NOT build quoted history, does NOT clean or transform content
+- Just a transport tool that converts format and sends
+
+**ReplyContext** (base64 opaque token)
+- Metadata-only: contains channel type, sender, recipient, subject, `incomingMessageDir`, threading IDs
+- Never contains real content (no message body, no preview)
+- The AI passes it through unchanged (opaque base64 string)
+- The Reply Tool decodes it to locate the stored message and reconstruct threading metadata
+
+### Data Flow Summary
+
+```
+Email arrives
+  → InboundAdapter: parse, clean subject + body → clean InboundMessage
+    → MessageStorage: store as-is → received.md (clean source of truth)
+      → PromptBuilder: read received.md, strip + truncate for AI → prompt
+        → AI: receives stripped body + opaque context token
+          → Reply Tool: decode context, read received.md (full body)
+            → formatQuotedReply(): AI reply + full quoted history (markdown)
+            → SmtpService: markdown→HTML, add headers, send via SMTP
+            → MessageStorage: store full reply → reply.md (= what was sent)
+```
+
 ## Core Abstractions
 
 ### Channel Types (`src/channels/types.ts`)
@@ -466,8 +525,9 @@ Events from `promptWithProgress()` are logged with deduplication:
 - **Step start**: Logged at INFO with step number and model name (from `message.updated` event). Shows which model (main vs `small_model`) is used for each step.
 - **Step finish**: Logged at DEBUG with cost, token counts (input/output/reasoning/cache), and reason.
 - **Tool calls**: Logged at INFO only on status change per part ID (pending → running → completed). Avoids duplicate "running" logs from repeated SSE updates.
-- **Tool input**: reply_message tool args logged at DEBUG on `pending` (message preview, context preview, attachments)
-- **Tool errors**: reply_message `completed` with error output logged at WARN (not treated as success)
+- **Tool input**: reply_message tool args logged at INFO on `running` (message preview, context type/length, attachments). Tool details (command, path, pattern) logged for other tools.
+- **Tool output**: reply_message output logged at INFO on `completed` (success or error)
+- **Tool errors**: reply_message `completed` with error output logged at ERROR (MCP errors and application errors)
 - **Session status**: Logged at DEBUG only on status type change (avoids duplicate "Session busy" logs)
 - **Progress**: Every 10s at INFO with elapsed time, part count, current activity (reasoning/text/tool name), silence duration
 - **Raw SSE**: First 5 events logged at DEBUG (before session filter) for diagnostics

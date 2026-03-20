@@ -20,7 +20,7 @@ import type { ImapConfig, WatchConfig, Email, Pattern, OutputConfig } from '../.
 import { EmailMonitor } from '../../services/imap/monitor';
 import { logger } from '../../core/logger';
 import { extractDomain, validateRegex, stripReplyPrefix } from '../../utils/helpers';
-import { sanitizeForFilename, deriveThreadName } from '../../core/email-parser';
+import { sanitizeForFilename, deriveThreadName, cleanEmailBody } from '../../core/email-parser';
 
 /**
  * Email-specific matching rules within a ChannelPattern.
@@ -193,7 +193,7 @@ export class EmailInboundAdapter implements InboundAdapter {
       recipients: email.to || [],
       topic: stripReplyPrefix(email.subject || '(no subject)'),
       content: {
-        text: email.body.text,
+        text: cleanEmailBody(email.body.text || ''),
         html: email.body.html,
       },
       timestamp: email.date,

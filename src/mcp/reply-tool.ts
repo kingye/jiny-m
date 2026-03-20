@@ -237,15 +237,26 @@ async function handleReplyMessage(
         originalMessage.content.text = fullBody;
         log('INFO', 'Loaded full body from stored message', { path: mdPath, bodyLength: fullBody.length });
       } else {
-        log('WARN', 'Could not extract body from stored message, using context preview', { path: mdPath });
+        log('WARN', 'Could not extract body from stored message — reply will be sent without quoted history', { path: mdPath });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      log('WARN', 'Failed to read stored message, using context preview as fallback', { incomingDir, error: msg });
+      log('WARN', 'Failed to read stored message — reply will be sent without quoted history', { incomingDir, error: msg });
     }
   }
 
-  // 8. Instantiate outbound adapter based on channel type
+  // 8. Build full reply text: AI reply + quoted history (markdown)
+  const quotedHistory = formatQuotedReply(
+    replyContext.sender,
+    replyContext.timestamp,
+    replyContext.topic,
+    originalMessage.content.text || '',
+  );
+  const fullReplyText = quotedHistory
+    ? `${message}\n\n${quotedHistory}`
+    : message;
+
+  // 9. Instantiate outbound adapter based on channel type
   let outboundAdapter: OutboundAdapter;
   try {
     outboundAdapter = createOutboundAdapter(replyContext.channel, config);
@@ -260,12 +271,12 @@ async function handleReplyMessage(
     };
   }
 
-  // 9. Send reply via outbound adapter
+  // 10. Send reply via outbound adapter (full reply text including quoted history)
   log('INFO', 'Sending reply', {
     channel: replyContext.channel,
     recipient: replyContext.recipient,
     topic: replyContext.topic,
-    messageLength: message.length,
+    messageLength: fullReplyText.length,
     attachmentCount: validatedAttachments.length,
   });
 
@@ -273,7 +284,7 @@ async function handleReplyMessage(
   try {
     const result = await outboundAdapter.sendReply(
       originalMessage,
-      message,
+      fullReplyText,
       validatedAttachments.length > 0 ? validatedAttachments : undefined,
     );
     sentMessageId = result.messageId;
@@ -289,10 +300,10 @@ async function handleReplyMessage(
     await outboundAdapter.disconnect().catch(() => {});
   }
 
-  // 10. Store reply in thread folder
+  // 11. Store reply in thread folder (full reply text = exactly what was sent)
   try {
     const storage = new MessageStorage(config.workspace);
-    await storage.storeReply(threadPath, message, replyContext.incomingMessageDir);
+    await storage.storeReply(threadPath, fullReplyText, replyContext.incomingMessageDir);
     log('INFO', 'Reply stored', { threadPath });
   } catch (error) {
     log('ERROR', 'Failed to store reply after sending', {
@@ -419,6 +430,55 @@ function getContentType(ext: string): string {
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   };
   return types[ext] || 'application/octet-stream';
+}
+
+/**
+ * Format a quoted reply block in markdown.
+ * Takes the full body as-is — NO stripping, NO cleaning.
+ * Cleaning happens at ingest time in InboundAdapter, not here.
+ *
+ * Returns empty string if bodyText is empty (no quoted block needed).
+ */
+function formatQuotedReply(
+  sender: string,
+  timestamp: Date | string,
+  subject: string,
+  bodyText: string,
+): string {
+  if (!bodyText.trim()) return '';
+
+  // Format time with Invalid Date fallback
+  let timeStr: string;
+  try {
+    const d = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
+    timeStr = (d instanceof Date && !isNaN(d.getTime()))
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Extract display name — strip angle brackets and nested brackets
+  let fromName = sender || 'Unknown';
+  if (fromName.includes('<')) {
+    fromName = fromName.split('<')[0]?.trim().replace(/['"]/g, '') || fromName;
+  }
+  fromName = fromName.replace(/\s*\[.*$/, '').trim();
+  if (!fromName) fromName = sender || 'Unknown';
+
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push(`### ${fromName} (${timeStr})`);
+  lines.push('> ' + subject);
+  lines.push('');
+
+  const quotedBody = bodyText
+    .split('\n')
+    .map((line: string) => `> ${line}`)
+    .join('\n');
+  lines.push(quotedBody);
+
+  return lines.join('\n');
 }
 
 // Start the MCP server
