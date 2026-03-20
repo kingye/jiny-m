@@ -273,6 +273,40 @@ export class OpenCodeService {
       aiReply.replySentByTool = await this.checkSignalFile(threadPath);
     }
 
+    // Verify: if SSE says reply was sent but signal file is missing, the tool
+    // was never actually invoked (stale session replaying cached results).
+    // Delete the session and retry with a fresh one.
+    if (aiReply.replySentByTool) {
+      const signalConfirmed = await this.checkSignalFile(threadPath);
+      if (!signalConfirmed) {
+        logger.error('Reply tool reported success via SSE but signal file not found — stale session detected', {
+          sessionId: session.sessionId,
+          thread: basename(threadPath),
+        });
+        // Delete session to force a fresh one on retry
+        await this.deleteSession(threadPath);
+        // Retry once with a new session
+        logger.info('Retrying with new session...', { thread: basename(threadPath) });
+        const newSession = await this.getOrCreateSession(threadPath);
+        await this.cleanupStaleSignalFile(threadPath);
+        const retryResult = await this.promptWithProgress(newSession, threadPath, systemPrompt, prompt);
+        const retryReply = this.extractAiReply(retryResult.parts as Array<any>);
+        retryReply.replySentByTool = retryResult.replySentByTool || this.checkToolUsed(retryResult.parts as Array<any>);
+        if (!retryReply.replySentByTool) {
+          retryReply.replySentByTool = await this.checkSignalFile(threadPath);
+        }
+        await this.updateSessionState(threadPath, newSession);
+        logger.info('Generated reply (retry)', {
+          sessionId: newSession.sessionId,
+          textLength: retryReply.text.length,
+          attachmentCount: retryReply.attachments.length,
+          attachments: retryReply.attachments.map(a => a.filename),
+          replySentByTool: retryReply.replySentByTool,
+        });
+        return retryReply;
+      }
+    }
+
     await this.updateSessionState(threadPath, session);
 
     logger.info('Generated reply', {
@@ -325,6 +359,20 @@ export class OpenCodeService {
     logger.info('Created new session (replacing old one)', { sessionId: newSession.sessionId, thread: threadName, directory: threadPath });
 
     return newSession;
+  }
+
+  /**
+   * Delete session file to force a fresh session on next use.
+   * Used when a stale session is detected (SSE reports tool success but tool was never invoked).
+   */
+  private async deleteSession(threadPath: string): Promise<void> {
+    const sessionFile = join(threadPath, '.jiny', 'session.json');
+    try {
+      await unlink(sessionFile);
+      logger.info('Deleted stale session file', { sessionFile, thread: basename(threadPath) });
+    } catch {
+      // File may not exist — that's fine
+    }
   }
 
   private async getOrCreateSession(threadPath: string): Promise<ThreadSession> {
