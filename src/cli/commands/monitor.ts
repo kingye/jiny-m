@@ -20,6 +20,8 @@ import { AlertService } from '../../core/alert-service';
 import { OutputFormatter } from '../../output';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
+import { readdir, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 
 export interface MonitorCommandOptions {
   config?: string;
@@ -32,6 +34,7 @@ export interface MonitorCommandOptions {
 
 let activeAdapters: Array<{ stop: () => Promise<void> }> = [];
 let activeAlertService: AlertService | null = null;
+let shutdownCleanup: (() => Promise<void>) | null = null;
 
 export async function monitorCommand(options: MonitorCommandOptions): Promise<void> {
   let opencodeService: OpenCodeService | undefined;
@@ -179,6 +182,25 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       logger.info('Inbound adapter started', { channel: adapter.channelType });
     }
 
+    // 10. Register shutdown cleanup (delete session files to prevent stale sessions on restart)
+    shutdownCleanup = async () => {
+      try {
+        const entries = await readdir(workspaceConfig.folder, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const sessionFile = join(workspaceConfig.folder, entry.name, '.jiny', 'session.json');
+          try {
+            await unlink(sessionFile);
+            logger.debug('Deleted session file on shutdown', { thread: entry.name });
+          } catch {
+            // File doesn't exist — fine
+          }
+        }
+      } catch {
+        // Workspace dir may not exist — fine
+      }
+    };
+
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Monitor command failed', { error: errorMessage });
@@ -196,6 +218,9 @@ process.on('SIGINT', async () => {
     try { await activeAlertService.stop(); } catch {}
     activeAlertService = null;
   }
+  if (shutdownCleanup) {
+    try { await shutdownCleanup(); } catch {}
+  }
   for (const adapter of activeAdapters) {
     try { await adapter.stop(); } catch {}
   }
@@ -207,6 +232,9 @@ process.on('SIGTERM', async () => {
   if (activeAlertService) {
     try { await activeAlertService.stop(); } catch {}
     activeAlertService = null;
+  }
+  if (shutdownCleanup) {
+    try { await shutdownCleanup(); } catch {}
   }
   for (const adapter of activeAdapters) {
     try { await adapter.stop(); } catch {}
