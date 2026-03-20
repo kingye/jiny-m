@@ -3,6 +3,8 @@ import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
 import TurndownService from 'turndown';
+import { stripReplyPrefix } from '../../utils/helpers';
+import { stripQuotedHistory } from '../../core/email-parser';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -146,9 +148,8 @@ export class SmtpService {
     }
 
     const toAddress = options.to;
-    const replySubject = options.subject.startsWith('Re:')
-      ? options.subject
-      : `Re: ${options.subject}`;
+    const cleanSubject = stripReplyPrefix(options.subject);
+    const replySubject = `Re: ${cleanSubject}`;
 
     const replyMessageId = `<${Date.now()}.reply@${this.config.host.split(':')[0]}>`;
 
@@ -267,28 +268,38 @@ export class SmtpService {
     const lines: string[] = [];
 
     const timeStr = email.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Extract clean display name from the "from" field.
+    // Handle formats like: "Name" <addr>, Name <addr>, addr, or nested brackets
     let fromName = email.from || 'Unknown';
     if (fromName.includes('<')) {
-      const parts = fromName.split('<');
-      fromName = parts[0]?.trim().replace(/['"]/g, '') || fromName;
+      fromName = fromName.split('<')[0]?.trim().replace(/['"]/g, '') || fromName;
     }
+    // Remove any leftover bracket nesting from previous quoting
+    fromName = fromName.replace(/\s*\[.*$/, '').trim();
+    if (!fromName) fromName = email.from || 'Unknown';
+
+    // Clean subject — strip redundant Re:/回复: prefixes
+    const cleanSubject = stripReplyPrefix(email.subject);
 
     // Chat-style quoted message header
     lines.push('---');
     lines.push(`### ${fromName} (${timeStr})`);
-    lines.push('> ' + email.subject);
+    lines.push('> ' + cleanSubject);
     lines.push('');
 
-    // Use the full email body including quoted history so the entire
-    // thread is preserved in the outgoing reply (standard email behaviour).
+    // Quote only the NEW content from the sender's message (strip previous quoted history).
+    // This prevents exponential nesting of quoted blocks and email address repetition.
+    let bodyText: string | undefined;
     if (email.body.text) {
-      const quotedBody = email.body.text
-        .split('\n')
-        .map((line: string) => `> ${line}`)
-        .join('\n');
-      lines.push(quotedBody);
+      bodyText = email.body.text;
     } else if (email.body.html) {
-      const quotedBody = turndownService.turndown(email.body.html)
+      bodyText = turndownService.turndown(email.body.html);
+    }
+
+    if (bodyText) {
+      const freshContent = stripQuotedHistory(bodyText);
+      const quotedBody = freshContent
         .split('\n')
         .map((line: string) => `> ${line}`)
         .join('\n');
