@@ -12,10 +12,10 @@ export interface MonitorState {
 }
 
 export class StateManager {
-  private static readonly CURRENT_MIGRATION_VERSION = 2;
+  private static readonly CURRENT_MIGRATION_VERSION = 3;
   private static readonly UID_SET_FILE = '.processed-uids.txt';
-  private static stateFilePath: string = '.jiny/.state.json';
-  private static stateDir: string = '.jiny';
+  private static stateFilePath: string = '.jiny/email/.state.json';
+  private static stateDir: string = '.jiny/email';
   private static migrationDisabled: boolean = false;
   private static state: MonitorState = {
     lastSequenceNumber: 0,
@@ -53,6 +53,9 @@ export class StateManager {
       if (currentVersion < 2) {
         await StateManager.runMigrationV2();
       }
+      if (currentVersion < 3) {
+        await StateManager.runMigrationV3();
+      }
 
       StateManager.state.migrationVersion = StateManager.CURRENT_MIGRATION_VERSION;
       await StateManager.save();
@@ -72,7 +75,13 @@ export class StateManager {
 
       const { ConfigManager } = await import('../config');
       const config = await ConfigManager.create();
-      const imapConfig = config.getImapConfig();
+      const emailConfig = config.getEmailChannelConfig();
+      const imapConfig = emailConfig?.inbound || config.getImapConfig();
+
+      if (!imapConfig) {
+        logger.warn('No IMAP config found, skipping migration v1');
+        return;
+      }
 
       const imapClient = new ImapClient(imapConfig, false, false);
       await imapClient.connect();
@@ -302,12 +311,144 @@ export class StateManager {
     }
   }
 
+  /**
+   * Migration v3: Move state files from .jiny/ to .jiny/email/ (per-channel state).
+   * Also adds `channel: email` to received.md frontmatter if missing.
+   */
+  private static async runMigrationV3(): Promise<void> {
+    try {
+      logger.info('Starting migration v3: Relocate state files to .jiny/email/');
+
+      const jinyDir = join(process.cwd(), '.jiny');
+      const emailStateDir = join(jinyDir, 'email');
+
+      // Create .jiny/email/ directory
+      await mkdir(emailStateDir, { recursive: true });
+
+      // Move .state.json if it exists in .jiny/ (not already in .jiny/email/)
+      const oldStatePath = join(jinyDir, '.state.json');
+      const newStatePath = join(emailStateDir, '.state.json');
+      try {
+        await readFile(oldStatePath, 'utf-8');
+        // Old state file exists — check if new one already exists
+        try {
+          await readFile(newStatePath, 'utf-8');
+          // New file already exists — skip (don't overwrite)
+          logger.debug('State file already in .jiny/email/, skipping move');
+        } catch {
+          // New file doesn't exist — move
+          await rename(oldStatePath, newStatePath);
+          logger.info('Moved .state.json to .jiny/email/');
+        }
+      } catch {
+        // Old state file doesn't exist — nothing to move
+        logger.debug('No .jiny/.state.json to migrate');
+      }
+
+      // Move .processed-uids.txt
+      const oldUidsPath = join(jinyDir, '.processed-uids.txt');
+      const newUidsPath = join(emailStateDir, '.processed-uids.txt');
+      try {
+        await readFile(oldUidsPath, 'utf-8');
+        try {
+          await readFile(newUidsPath, 'utf-8');
+          logger.debug('UIDs file already in .jiny/email/, skipping move');
+        } catch {
+          await rename(oldUidsPath, newUidsPath);
+          logger.info('Moved .processed-uids.txt to .jiny/email/');
+        }
+      } catch {
+        logger.debug('No .jiny/.processed-uids.txt to migrate');
+      }
+
+      // Update StateManager to use the new paths
+      StateManager.stateFilePath = newStatePath;
+      StateManager.stateDir = emailStateDir;
+
+      // Reload state from new location
+      try {
+        const content = await readFile(newStatePath, 'utf-8');
+        StateManager.state = JSON.parse(content);
+      } catch {
+        // No state file — will be created on first save
+      }
+
+      // Add channel: email to received.md files that don't have it
+      try {
+        const { ConfigManager: CM } = await import('../config');
+        const config = await CM.create();
+        const workspaceFolder = join(process.cwd(), config.getWorkspaceConfig().folder);
+
+        const entries = await readdir(workspaceFolder, { withFileTypes: true });
+        const threadDirs = entries
+          .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+          .map(e => join(workspaceFolder, e.name));
+
+        let updatedFiles = 0;
+        for (const threadDir of threadDirs) {
+          const messagesDir = join(threadDir, 'messages');
+          try {
+            const msgDirEntries = await readdir(messagesDir, { withFileTypes: true });
+            for (const msgDir of msgDirEntries.filter(e => e.isDirectory())) {
+              const receivedPath = join(messagesDir, msgDir.name, 'received.md');
+              try {
+                const content = await readFile(receivedPath, 'utf-8');
+                if (content.includes('channel:')) continue; // Already has channel field
+                // Add channel: email after the first ---
+                const updated = content.replace(
+                  /^---\n/,
+                  '---\nchannel: email\n',
+                );
+                if (updated !== content) {
+                  await writeFile(receivedPath, updated, 'utf-8');
+                  updatedFiles++;
+                }
+              } catch {
+                // No received.md or can't read — skip
+              }
+            }
+          } catch {
+            // No messages/ dir — skip
+          }
+        }
+
+        if (updatedFiles > 0) {
+          logger.info('Added channel field to received.md files', { count: updatedFiles });
+        }
+      } catch (error) {
+        // Non-fatal: frontmatter update is optional
+        logger.debug('Could not update received.md frontmatter', {
+          error: error instanceof Error ? error.message : 'Unknown',
+        });
+      }
+
+      logger.info('Migration v3 completed');
+    } catch (error) {
+      logger.error('Migration v3 failed', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Non-fatal: old .jiny/ paths will still work via StateManager fallback
+    }
+  }
+
   static async load(): Promise<void> {
     try {
       const content = await readFile(StateManager.stateFilePath, 'utf-8');
       StateManager.state = JSON.parse(content);
       console.log('Loaded previous state:', StateManager.state);
     } catch (error) {
+      // Fallback: try legacy .jiny/.state.json if new path not found
+      if (StateManager.stateFilePath.includes('/email/')) {
+        try {
+          const legacyPath = StateManager.stateFilePath.replace('/email/', '/');
+          const content = await readFile(legacyPath, 'utf-8');
+          StateManager.state = JSON.parse(content);
+          console.log('Loaded previous state from legacy path:', StateManager.state);
+          return;
+        } catch {
+          // Legacy path also doesn't exist — start fresh
+        }
+      }
       console.log('No previous state found, starting fresh');
     }
   }
@@ -431,8 +572,8 @@ export class StateManager {
    */
   static restoreAfterTests(): void {
     StateManager.migrationDisabled = false;
-    StateManager.stateFilePath = '.jiny/.state.json';
-    StateManager.stateDir = '.jiny';
+    StateManager.stateFilePath = '.jiny/email/.state.json';
+    StateManager.stateDir = '.jiny/email';
     StateManager.state = {
       lastSequenceNumber: 0,
       lastProcessedTimestamp: new Date().toISOString(),
