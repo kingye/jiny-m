@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { validateConfig, expandEnvVars, ConfigValidationError } from './schemas';
-import type { Config } from '../types';
+import type { Config, Pattern, ChannelPattern, EmailChannelConfig, WatchConfig } from '../types';
 import { DEFAULT_CONFIG_PATH, DEFAULT_WATCH_CONFIG, DEFAULT_OUTPUT_CONFIG } from '../utils/constants';
 
 export class ConfigManager {
@@ -39,6 +39,76 @@ export class ConfigManager {
     }
     return this.config;
   }
+
+  // --- Channel config accessors ---
+
+  /** Get email channel config (from channels.email or legacy imap/smtp). */
+  getEmailChannelConfig(): EmailChannelConfig | undefined {
+    const config = this.getConfig();
+    if (config.channels?.email) return config.channels.email;
+    // Legacy fallback
+    if (config.imap && config.smtp) {
+      return {
+        inbound: config.imap,
+        outbound: config.smtp,
+        watch: config.watch,
+      };
+    }
+    return undefined;
+  }
+
+  /** Get watch config (from channels.email.watch or legacy watch). */
+  getEffectiveWatchConfig(): WatchConfig {
+    const emailConfig = this.getEmailChannelConfig();
+    return {
+      ...DEFAULT_WATCH_CONFIG,
+      ...(emailConfig?.watch || this.getConfig().watch),
+    };
+  }
+
+  /**
+   * Get all patterns as ChannelPattern (converts legacy patterns to email ChannelPattern).
+   */
+  getChannelPatterns(): ChannelPattern[] {
+    const config = this.getConfig();
+    return config.patterns
+      .filter((p: any) => p.enabled !== false)
+      .map((p: any) => {
+        // Already a ChannelPattern
+        if (p.channel && p.rules) return p as ChannelPattern;
+        // Legacy Pattern — convert to email ChannelPattern
+        return this.legacyPatternToChannelPattern(p as Pattern);
+      });
+  }
+
+  /** Convert a legacy Pattern to a ChannelPattern for the email channel. */
+  private legacyPatternToChannelPattern(pattern: Pattern): ChannelPattern {
+    const rules: Record<string, any> = {};
+    if (pattern.sender) rules.sender = pattern.sender;
+    if (pattern.subject) rules.subject = pattern.subject;
+    if (pattern.caseSensitive !== undefined) rules.caseSensitive = pattern.caseSensitive;
+
+    const result: ChannelPattern = {
+      name: pattern.name,
+      channel: 'email',
+      enabled: pattern.enabled,
+      rules,
+    };
+
+    // Convert inboundAttachments to attachments
+    if (pattern.inboundAttachments) {
+      result.attachments = {
+        enabled: pattern.inboundAttachments.enabled,
+        allowedExtensions: pattern.inboundAttachments.allowedExtensions,
+        maxFileSize: pattern.inboundAttachments.maxFileSize,
+        maxAttachmentsPerMessage: pattern.inboundAttachments.maxAttachmentsPerEmail,
+      };
+    }
+
+    return result;
+  }
+
+  // --- Legacy accessors (kept for backward compat) ---
   
   getImapConfig() {
     return this.getConfig().imap;
@@ -78,7 +148,7 @@ export class ConfigManager {
   }
   
   getPatterns() {
-    return this.getConfig().patterns.filter(p => p.enabled !== false);
+    return this.getConfig().patterns.filter((p: any) => p.enabled !== false);
   }
   
   static async create(configPath?: string): Promise<ConfigManager> {
