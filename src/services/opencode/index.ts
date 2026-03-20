@@ -414,6 +414,7 @@ export class OpenCodeService {
     if (!this.client) throw new Error('OpenCode client not initialized');
 
     const ACTIVITY_TIMEOUT = 120_000;  // 2 minutes of silence → timeout
+    const TOOL_ACTIVITY_TIMEOUT = 300_000; // 5 minutes when a tool is actively running
     const PROGRESS_LOG_INTERVAL = 10_000; // Log progress every 10 seconds
     const sessionId = session.sessionId;
 
@@ -484,13 +485,18 @@ export class OpenCodeService {
         });
       }
 
-      if (silenceMs > ACTIVITY_TIMEOUT) {
-        logger.warn('Activity timeout: no events for 2 minutes', {
+      // Use a longer timeout when a tool is actively running — OpenCode doesn't emit
+      // SSE events during tool execution, so long-running tools (write, bash) cause
+      // silence that doesn't indicate a real hang.
+      const activeTimeout = lastToolName ? TOOL_ACTIVITY_TIMEOUT : ACTIVITY_TIMEOUT;
+      if (silenceMs > activeTimeout) {
+        logger.warn(`Activity timeout: no events for ${Math.round(activeTimeout / 1000)}s`, {
           elapsed: `${Math.round(elapsedMs / 1000)}s`,
           parts: accumulatedParts.length,
+          lastTool: lastToolName || 'none',
         });
         done = true;
-        sessionError = new Error(`No activity from OpenCode for ${Math.round(ACTIVITY_TIMEOUT / 1000)} seconds`);
+        sessionError = new Error(`No activity from OpenCode for ${Math.round(activeTimeout / 1000)} seconds`);
         // Force-close the SSE stream so the for-await loop unblocks immediately
         if (sseStream) {
           try { sseStream.return(undefined); } catch { /* ignore */ }
