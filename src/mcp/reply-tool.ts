@@ -67,18 +67,28 @@ server.tool(
   async ({ message, context: contextJson, attachments: attachmentFilenames }) => {
     log('INFO', 'reply_message tool called', {
       messageLength: message?.length,
+      messagePreview: message ? message.substring(0, 100) : '(empty)',
       hasContext: !!contextJson,
+      contextLength: contextJson?.length || 0,
+      contextPreview: contextJson ? contextJson.substring(0, 200) : '(empty)',
       attachments: attachmentFilenames || [],
       cwd: process.cwd(),
       JINY_ROOT: process.env.JINY_ROOT || 'not set',
     });
 
     try {
-      return await handleReplyMessage(message, contextJson, attachmentFilenames);
+      const result = await handleReplyMessage(message, contextJson, attachmentFilenames);
+      // Log final outcome clearly
+      const isError = result.isError === true;
+      const text = result.content?.[0]?.text || '';
+      if (isError) {
+        log('ERROR', 'reply_message FAILED', { error: text });
+      }
+      return result;
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       const stack = error instanceof Error ? error.stack : undefined;
-      log('ERROR', 'Unhandled error in reply_message', { error: msg, stack });
+      log('ERROR', 'reply_message FAILED (unhandled)', { error: msg, stack });
       return {
         content: [{ type: 'text' as const, text: `Error: ${msg}` }],
         isError: true,
