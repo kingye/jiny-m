@@ -1,5 +1,11 @@
 #!/usr/bin/env bun
 
+/**
+ * Main entry point for jiny-m CLI.
+ * This file is used for bun build --compile.
+ * The ./jiny-m file (no extension) is the dev-mode entry point.
+ */
+
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { program } from 'commander';
@@ -8,6 +14,7 @@ import { initConfigCommand, validateConfigCommand } from './src/cli/commands/con
 import { listPatternsCommand, addPatternCommand } from './src/cli/commands/patterns';
 
 // Parse --workdir early (before commander), since it must take effect before any other code runs.
+// This changes process.cwd() so all path resolution throughout the app is relative to the workdir.
 const workdirIndex = process.argv.indexOf('--workdir');
 const workdirShortIndex = process.argv.indexOf('-w');
 const wdIdx = workdirIndex !== -1 ? workdirIndex : workdirShortIndex;
@@ -19,6 +26,7 @@ if (wdIdx !== -1 && process.argv[wdIdx + 1]) {
     console.error(`Error: Cannot change to workdir "${workdir}": ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
+  // Remove --workdir/-w and its value from argv so commander doesn't see them
   process.argv.splice(wdIdx, 2);
 }
 

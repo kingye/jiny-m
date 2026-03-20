@@ -1,5 +1,6 @@
-import { join, basename, resolve } from 'node:path';
-import { readdir, readFile as fsReadFile, mkdir, unlink, access } from 'node:fs/promises';
+import { join, basename, resolve, dirname } from 'node:path';
+import { readdir, readFile as fsReadFile, mkdir, unlink, access, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
 import type { OpenCodeConfig, ThreadSession, Email, AiGeneratedReply, GeneratedFile } from '../../types';
 import { logger } from '../../core/logger';
@@ -85,7 +86,7 @@ export class OpenCodeService {
     await mkdir(opencodeDir, { recursive: true });
 
     const configPath = join(threadPath, 'opencode.json');
-    const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
+    const { toolCommand } = this.getReplyToolCommand();
 
     // Build expected model strings in "provider/model" format for opencode.json
     const expectedModel = this.getModelString();
@@ -96,7 +97,9 @@ export class OpenCodeService {
       const existing = Bun.file(configPath);
       if (await existing.exists()) {
         const content = await existing.json();
-        if (content?.mcp?.['jiny_reply']?.command?.[2] === toolPath &&
+        const existingCommand = JSON.stringify(content?.mcp?.['jiny_reply']?.command);
+        const expectedCommand = JSON.stringify(toolCommand);
+        if (existingCommand === expectedCommand &&
             content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd() &&
             (content?.model ?? undefined) === expectedModel &&
             (content?.small_model ?? undefined) === expectedSmallModel) {
@@ -123,7 +126,7 @@ export class OpenCodeService {
     opencodeConfig.mcp = {
       'jiny_reply': {
         type: 'local',
-        command: ['bun', 'run', toolPath],
+        command: toolCommand,
         environment: { JINY_ROOT: process.cwd() },
         enabled: true,
         timeout: 60000,
@@ -134,6 +137,7 @@ export class OpenCodeService {
       await Bun.write(configPath, JSON.stringify(opencodeConfig, null, 2));
       logger.info('OpenCode config written', {
         configPath,
+        toolCommand,
         model: expectedModel || '(default)',
         smallModel: expectedSmallModel || '(default)',
       });
@@ -1080,6 +1084,30 @@ export class OpenCodeService {
       // No signal file — tool didn't send (or file was already cleaned up)
       return false;
     }
+  }
+
+  /**
+   * Determine the command to spawn the MCP reply tool.
+   *
+   * In compiled mode: looks for jiny-m-reply-tool binary next to the main binary
+   * (or in the same directory as the compiled executable).
+   * In development mode: uses `bun run src/mcp/reply-tool.ts`.
+   */
+  private getReplyToolCommand(): { toolCommand: string[] } {
+    // Check if we're running as a compiled binary
+    // Bun sets process.argv[0] to the binary path when compiled
+    const mainBinary = process.argv[0];
+    if (mainBinary) {
+      const binDir = dirname(mainBinary);
+      const replyToolBinary = join(binDir, 'jiny-m-reply-tool');
+      if (existsSync(replyToolBinary)) {
+        return { toolCommand: [replyToolBinary] };
+      }
+    }
+
+    // Development mode: use bun run with the .ts source
+    const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
+    return { toolCommand: ['bun', 'run', toolPath] };
   }
 
 }
