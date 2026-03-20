@@ -646,15 +646,15 @@ export class OpenCodeService {
                   }
                 }
 
-                // Log tool input when reply tool is first called (pending state has the AI's arguments)
-                if (isReplyTool && toolStatus === 'pending' && part.state?.input) {
+                // Log reply tool input at 'running' status (input is empty at 'pending')
+                if (isReplyTool && toolStatus === 'running' && part.state?.input) {
                   const input = part.state.input;
                   const contextStr = typeof input.context === 'string' ? input.context : JSON.stringify(input.context);
-                  logger.debug('reply_email tool input from AI', {
+                  logger.info('Reply tool input from AI', {
                     messageLength: typeof input.message === 'string' ? input.message.length : 0,
-                    messagePreview: typeof input.message === 'string' ? input.message.substring(0, 100) : 'N/A',
+                    messagePreview: typeof input.message === 'string' ? input.message.substring(0, 100) : '(empty)',
                     contextLength: contextStr?.length || 0,
-                    contextPreview: contextStr?.substring(0, 300) || 'N/A',
+                    contextPreview: contextStr?.substring(0, 300) || '(empty)',
                     attachments: input.attachments || [],
                   });
                 }
@@ -666,6 +666,7 @@ export class OpenCodeService {
                   // Check output for error indicators — OpenCode reports "completed"
                   // even when the MCP tool returns isError: true
                   const output = (part.state?.output || '').toString();
+                  logger.info('Reply tool output', { output: output.substring(0, 300) });
                   if (output.toLowerCase().startsWith('error')) {
                     logger.error('Reply tool completed with error output', {
                       tool: part.tool,
