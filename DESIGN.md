@@ -168,7 +168,8 @@ interface OpenCodeConfig {
   enabled: boolean;
   hostname?: string;
   provider?: string;
-  model?: string;
+  model?: string;                   // Primary model (e.g. "Pro/zai-org/GLM-4.7")
+  smallModel?: string;              // Small model for lightweight tasks (e.g. title generation)
   systemPrompt?: string;
   includeThreadHistory?: boolean;
   contextSecret?: string;          // Reserved for future HMAC context validation
@@ -237,6 +238,7 @@ A single shared OpenCode server handles all email threads. Each thread session o
 - **SSE streaming** - `promptAsync()` + `event.subscribe()` for real-time progress and tool detection
 - **Fallback** - If SSE subscription fails, falls back to blocking `prompt()` with 5-min timeout
 - **Signal file detection** - Last-resort: checks `.jiny/reply-sent.flag` if SSE missed tool call events
+- **Model config via opencode.json** - `model` and `small_model` written to per-thread config; model NOT passed per-prompt. Staleness check detects config changes and triggers rewrite + new session.
 
 #### Server Lifecycle Flow
 
@@ -324,14 +326,15 @@ export class OpenCodeService {
     } catch { return false; }
   }
   
-  async generateReply(email: Email, threadPath: string, storedEmailFile?: string): Promise<AiGeneratedReply> {
+  async generateReply(email: Email, threadPath: string, messageDir?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
     const session = await this.getOrCreateSession(threadPath);
-    const prompt = await this.buildPrompt(email, threadPath, storedEmailFile);
+    const prompt = await this.buildPrompt(email, threadPath, messageDir);
     
+    // Model config is in per-thread opencode.json (not passed per-prompt)
     // SSE streaming with activity-based timeout
     const { parts, replySentByTool } = await this.promptWithProgress(
-      session, threadPath, systemPrompt, modelConfig, prompt,
+      session, threadPath, systemPrompt, prompt,
     );
     
     const aiReply = this.extractAiReply(parts);
@@ -478,10 +481,14 @@ OpenCodeService.generateReply(email, threadPath, messageDir)
     ↓
 ensureThreadOpencodeSetup(threadPath)
   → writes opencode.json in thread dir with:
+    - model: primary model from config (e.g. "SiliconFlow/Pro/zai-org/GLM-4.7")
+    - small_model: lightweight model for internal tasks (e.g. title generation)
     - MCP config: jiny_reply server (command + JINY_ROOT env var)
     - permission: { "*": "allow" }
+  → staleness check: only rewrites if tool path, JINY_ROOT, model, or small_model changed
     ↓
 session.promptAsync({ system: systemPrompt, directory: threadPath })
+  (model NOT passed per-prompt — OpenCode reads it from opencode.json)
     ↓
 event.subscribe({ directory: threadPath })  ← SSE scoped to thread dir
     ↓
@@ -585,6 +592,8 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
+  "small_model": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
   "permission": { "*": "allow" },
   "mcp": {
     "jiny_reply": {
@@ -598,9 +607,13 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 }
 ```
 
+- `model` and `small_model` from jiny-m config (`reply.opencode.model` / `reply.opencode.smallModel`)
+- `small_model` used by OpenCode for lightweight internal tasks (title generation, compaction)
+- Model is NOT passed per-prompt via `body.model` — OpenCode reads from project config
 - `permission: { "*": "allow" }` prevents headless permission blocks
 - `JINY_ROOT` tells the MCP tool where to find the project config
-- Config is written once per thread (checked for freshness on each call)
+- Config checked for freshness on each call (staleness check includes model values)
+- When model changes in jiny-m config, opencode.json is rewritten + new session created
 - A new OpenCode session is created when config is freshly written
 
 ### Code Reuse
@@ -978,14 +991,15 @@ interface Config {
     f. Continue until max reconnection attempts reached
  5. For each new email:
     a. Fetch headers (From, To, Subject, MessageId, InReplyTo, References)
-    b. Run pattern matching
-    c. If match:
-       - Track UID in processed set
-       - Fetch full body and attachments
-       - Parse email content
-       - **STAGE 1: Save full body** (no stripping, no truncation)
-       - Save email to disk (full body as canonical record)
-       - **Extract commands** from email body (`/attach`, etc.)
+     b. Run pattern matching (case-insensitive by default)
+     c. If no match: log at debug level ("No pattern matched, skipping") and continue
+     d. If match:
+        - Track UID in processed set
+        - Fetch full body and attachments (preserves attachment content Buffers)
+        - Parse email content
+        - Save to `messages/<timestamp>/received.md` (full body, no stripping)
+        - Save whitelisted inbound attachments to same directory (if config enabled)
+        - **Extract commands** from email body (`/attach`, etc.)
        - If commands found:
          - Parse commands via CommandRegistry
          - Execute each command (e.g., AttachCommandHandler)
@@ -996,7 +1010,7 @@ interface Config {
           - Load last 5 thread context files (email/reply limit: 2)
           - Get or create OpenCode session for thread
           - **Build prompt context** (strip quoted history + truncation via `buildPromptContext()`)
-          - Embed `<reply_context>` block with `incomingFileName` pointer
+           - Embed `<reply_context>` block with `incomingMessageDir` pointer
           - Send prompt via `promptWithProgress()` (SSE streaming with activity-based timeout)
           - SSE events provide real-time progress logging + tool call detection
           - OpenCode calls reply_email tool → MCP tool reads .md for full body → sends SMTP + stores reply + writes signal file
@@ -1356,6 +1370,8 @@ Email files (`.md`) store the full body as canonical records. Stripping is only 
 **Code Organization:**
 - `stripQuotedHistory()` and `truncateText()` in `src/core/email-parser.ts`
 - `stripReplyPrefix()` in `src/utils/helpers.ts`
+- `deriveThreadName()` in `src/core/email-parser.ts` — strips reply prefixes + configured subject prefixes with broad separator support (`:`, `-`, `_`, `~`, `|`, `/`, `&`, `$`, `#`, `@`, `!`, `+`, `=`, `»`, `→`, `：`)
+- `parseFileSize()` in `src/utils/helpers.ts` — parses human-readable sizes like `"25mb"`, `"150kb"`
 - Stripping called only in `buildPromptContext()` and `buildPrompt()` (AI prompt construction)
 - Storage and SMTP modules do NOT call stripping functions
 
