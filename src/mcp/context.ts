@@ -12,9 +12,9 @@ export interface EmailReplyContext {
   references?: string[];
   bodyText?: string;
   bodyHtml?: string;
-  /** Filename of the stored incoming email in .jiny/ (e.g. "2026-03-19_21-07-06_Jiny_xxx.md").
-   *  The MCP reply tool reads this file for the full quoted history. */
-  incomingFileName?: string;
+  /** Name of the per-message directory under messages/ (e.g. "2026-03-19_23-02-20").
+   *  The MCP reply tool reads messages/<dir>/received.md for the full quoted history. */
+  incomingMessageDir?: string;
   uid: number;
 }
 
@@ -22,13 +22,13 @@ export interface EmailReplyContext {
  * Serialize an Email + threadName into a JSON string for the <reply_context> block.
  *
  * The bodyText is stripped and truncated — it's embedded in the AI prompt for display only.
- * The full email body is NOT included here; instead incomingFileName points to the
- * stored .jiny/*.md file that the MCP reply tool reads for quoted history.
+ * The full email body is NOT included here; instead incomingMessageDir points to the
+ * per-message directory under messages/ that the MCP reply tool reads for quoted history.
  */
 export function serializeContext(
   email: Email,
   threadName: string,
-  incomingFileName?: string,
+  incomingMessageDir?: string,
 ): string {
   const toAddress = email.headers['reply-to'] || email.from;
 
@@ -64,7 +64,7 @@ export function serializeContext(
     references: email.references,
     bodyText,
     bodyHtml,
-    incomingFileName,
+    incomingMessageDir,
     uid: email.uid,
   };
 
@@ -133,7 +133,7 @@ function sanitizeContextJson(json: string): string {
  *
  * Note: body.text here is the stripped/truncated version from the context.
  * The MCP reply tool should replace it with the full body read from
- * .jiny/<incomingFileName> before calling replyToEmail().
+ * messages/<incomingMessageDir>/received.md before calling replyToEmail().
  */
 export function contextToEmail(context: EmailReplyContext): Email {
   return {

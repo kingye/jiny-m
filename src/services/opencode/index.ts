@@ -184,7 +184,7 @@ export class OpenCodeService {
     });
   }
 
-  async generateReply(email: Email, threadPath: string, storedEmailFile?: string): Promise<AiGeneratedReply> {
+  async generateReply(email: Email, threadPath: string, messageDir?: string): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
 
     if (!this.client) {
@@ -207,7 +207,7 @@ export class OpenCodeService {
     }
 
     const systemPrompt = this.buildSystemPrompt(threadPath);
-    const prompt = await this.buildPrompt(email, threadPath, storedEmailFile);
+    const prompt = await this.buildPrompt(email, threadPath, messageDir);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });
 
@@ -370,7 +370,7 @@ export class OpenCodeService {
     return parts.join('\n');
   }
 
-  private async buildPrompt(email: Email, threadPath: string, storedEmailFile?: string): Promise<string> {
+  private async buildPrompt(email: Email, threadPath: string, messageDir?: string): Promise<string> {
     const parts: string[] = [];
     const threadName = basename(threadPath);
 
@@ -415,7 +415,7 @@ export class OpenCodeService {
     }
 
     // Append reply context (AFTER truncation so it is never cut)
-    const replyContext = serializeContext(email, threadName, storedEmailFile);
+    const replyContext = serializeContext(email, threadName, messageDir);
     const contextBlock = '\n\n<reply_context>' + replyContext + '</reply_context>';
 
     const prompt = conversationPrompt + contextBlock;
@@ -431,6 +431,87 @@ export class OpenCodeService {
 
   private async buildPromptContext(threadPath: string): Promise<string> {
     try {
+      const messagesDir = join(threadPath, 'messages');
+      let messageDirs: string[];
+
+      try {
+        const entries = await readdir(messagesDir, { withFileTypes: true });
+        messageDirs = entries
+          .filter(dirent => dirent.isDirectory())
+          .filter(dirent => !dirent.name.startsWith('.'))
+          .map(dirent => dirent.name)
+          .sort()
+          .slice(-MAX_FILES_IN_CONTEXT);
+      } catch {
+        // Fallback: try legacy .jiny/*.md structure (pre-migration)
+        return this.buildPromptContextLegacy(threadPath);
+      }
+
+      if (messageDirs.length === 0) {
+        // Try legacy as fallback
+        return this.buildPromptContextLegacy(threadPath);
+      }
+
+      const contextParts: string[] = [];
+      let totalLength = 0;
+
+      for (const dirName of messageDirs) {
+        const dirPath = join(messagesDir, dirName);
+
+        // Read received.md
+        try {
+          const receivedPath = join(dirPath, 'received.md');
+          const content = await fsReadFile(receivedPath, 'utf-8');
+          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
+          const trimmedContent = trimEmailReplyContent('received.md', fileContent);
+          const strippedContent = stripQuotedHistory(trimmedContent);
+          totalLength += strippedContent.length;
+
+          if (totalLength > MAX_TOTAL_CONTEXT) {
+            contextParts.push(strippedContent);
+            break;
+          }
+          contextParts.push(strippedContent);
+        } catch {
+          // No received.md in this dir — skip
+        }
+
+        if (totalLength > MAX_TOTAL_CONTEXT) break;
+
+        // Read reply.md
+        try {
+          const replyPath = join(dirPath, 'reply.md');
+          const content = await fsReadFile(replyPath, 'utf-8');
+          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
+          const trimmedContent = trimEmailReplyContent('reply.md', fileContent);
+          totalLength += trimmedContent.length;
+
+          if (totalLength > MAX_TOTAL_CONTEXT) {
+            contextParts.push(trimmedContent);
+            break;
+          }
+          contextParts.push(trimmedContent);
+        } catch {
+          // No reply.md — skip
+        }
+
+        if (totalLength > MAX_TOTAL_CONTEXT) break;
+      }
+
+      return contextParts.join('\n\n');
+    } catch (error) {
+      logger.debug('Failed to build prompt context', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return '';
+    }
+  }
+
+  /**
+   * Legacy: read from .jiny/*.md for threads not yet migrated.
+   */
+  private async buildPromptContextLegacy(threadPath: string): Promise<string> {
+    try {
       const stateDir = join(threadPath, '.jiny');
       const entries = await readdir(stateDir, { withFileTypes: true });
 
@@ -443,26 +524,16 @@ export class OpenCodeService {
         .sort()
         .slice(-MAX_FILES_IN_CONTEXT);
 
-      if (allFiles.length === 0) {
-        return '';
-      }
+      if (allFiles.length === 0) return '';
 
       const contextParts: string[] = [];
-
       let totalLength = 0;
+
       for (const fileName of allFiles) {
         try {
           const content = await fsReadFile(join(stateDir, fileName), 'utf-8');
-
-          let fileContent = content;
-          if (fileContent.length > MAX_PER_FILE) {
-            fileContent = truncateText(fileContent, MAX_PER_FILE);
-          }
-
+          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
           const trimmedContent = trimEmailReplyContent(fileName, fileContent);
-
-          // Strip quoted history for the AI prompt — .md files now store the full body
-          // but the AI only needs the latest message from each email.
           const strippedContent = stripQuotedHistory(trimmedContent);
           totalLength += strippedContent.length;
 
@@ -470,20 +541,14 @@ export class OpenCodeService {
             contextParts.push(strippedContent);
             break;
           }
-
           contextParts.push(strippedContent);
-        } catch (error) {
-          logger.debug(`Failed to read file: ${fileName}`, {
-            error: error instanceof Error ? error.message : 'Unknown',
-          });
+        } catch {
+          // skip unreadable files
         }
       }
 
       return contextParts.join('\n\n');
-    } catch (error) {
-      logger.debug('Failed to build thread context', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+    } catch {
       return '';
     }
   }

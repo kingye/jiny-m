@@ -1,5 +1,5 @@
-import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig } from '../types';
-import { validateRegex, extractDomain } from '../utils/helpers';
+import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig } from '../types';
+import { validateRegex, extractDomain, parseFileSize } from '../utils/helpers';
 
 export class ConfigValidationError extends Error {
   constructor(message: string) {
@@ -130,6 +130,10 @@ export function validatePattern(pattern: any): Pattern {
     throw new ConfigValidationError(`Pattern "${pattern.name}" must have at least sender or subject rules`);
   }
   
+  if (pattern.inboundAttachments) {
+    validatedPattern.inboundAttachments = validateInboundAttachmentConfig(pattern.inboundAttachments);
+  }
+  
   return validatedPattern;
 }
 
@@ -182,6 +186,48 @@ function validateSubjectPattern(pattern: any): Pattern['subject'] {
   const { exact, contains, ...validated } = pattern;
   
   return validated;
+}
+
+function validateInboundAttachmentConfig(config: any): InboundAttachmentConfig {
+  if (typeof config !== 'object' || config === null) {
+    throw new ConfigValidationError('inboundAttachments must be an object');
+  }
+
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new ConfigValidationError('inboundAttachments.enabled must be a boolean');
+  }
+
+  if (config.allowedExtensions !== undefined) {
+    if (!Array.isArray(config.allowedExtensions)) {
+      throw new ConfigValidationError('inboundAttachments.allowedExtensions must be an array');
+    }
+    for (const ext of config.allowedExtensions) {
+      if (typeof ext !== 'string' || !ext.startsWith('.')) {
+        throw new ConfigValidationError(`Invalid extension in inboundAttachments: "${ext}" (must start with ".")`);
+      }
+    }
+  }
+
+  if (config.maxFileSize !== undefined) {
+    try {
+      parseFileSize(config.maxFileSize);
+    } catch (e) {
+      throw new ConfigValidationError(`inboundAttachments.maxFileSize: ${(e as Error).message}`);
+    }
+  }
+
+  if (config.maxAttachmentsPerEmail !== undefined) {
+    if (typeof config.maxAttachmentsPerEmail !== 'number' || config.maxAttachmentsPerEmail < 1) {
+      throw new ConfigValidationError('inboundAttachments.maxAttachmentsPerEmail must be a positive number');
+    }
+  }
+
+  return {
+    enabled: config.enabled ?? false,
+    allowedExtensions: config.allowedExtensions || ['.pdf', '.pptx', '.docx', '.xlsx', '.png', '.jpg', '.txt', '.md'],
+    maxFileSize: config.maxFileSize ?? '25mb',
+    maxAttachmentsPerEmail: config.maxAttachmentsPerEmail ?? 10,
+  };
 }
 
 export function validateWorkspaceConfig(config: any): WorkspaceConfig {

@@ -53,3 +53,24 @@ export function formatFileSize(bytes: number): string {
   
   return `${size.toFixed(2)} ${units[unitIndex]}`;
 }
+
+/**
+ * Parse a human-readable file size string (e.g. "25mb", "150kb", "1gb") into bytes.
+ * Also accepts plain numbers (treated as bytes).
+ */
+export function parseFileSize(input: string | number): number {
+  if (typeof input === 'number') return input;
+  const match = input.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i);
+  if (!match || !match[1] || !match[2]) {
+    throw new Error(`Invalid file size format: "${input}". Use e.g. "25mb", "150kb", "1gb"`);
+  }
+  const value = parseFloat(match[1]);
+  const unit = match[2].toLowerCase();
+  const multipliers: Record<string, number> = {
+    b: 1,
+    kb: 1024,
+    mb: 1024 * 1024,
+    gb: 1024 * 1024 * 1024,
+  };
+  return Math.round(value * multipliers[unit]!);
+}

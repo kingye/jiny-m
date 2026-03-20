@@ -214,29 +214,38 @@ async function handleReplyEmail(
   // 6. Reconstruct Email object from context
   const email = contextToEmail(emailContext);
 
-  // 7. Load full email body from stored .md file for quoted history in the reply.
+  // 7. Load full email body from stored received.md for quoted history in the reply.
   //    The context only carries stripped/truncated bodyText for the AI prompt.
-  //    The .jiny/<incomingFileName> file has the full body including quoted history.
-  if (emailContext.incomingFileName) {
+  //    messages/<incomingMessageDir>/received.md has the full body including quoted history.
+  const incomingDir = emailContext.incomingMessageDir;
+  if (incomingDir) {
     try {
-      const mdPath = join(threadPath, '.jiny', emailContext.incomingFileName);
-      const mdContent = await readFile(mdPath, 'utf-8');
+      // Try new messages/ structure first
+      let mdPath = join(threadPath, 'messages', incomingDir, 'received.md');
+      let mdContent: string;
+      try {
+        mdContent = await readFile(mdPath, 'utf-8');
+      } catch {
+        // Fallback: try legacy .jiny/ path (pre-migration, incomingDir might be a filename)
+        mdPath = join(threadPath, '.jiny', incomingDir);
+        mdContent = await readFile(mdPath, 'utf-8');
+      }
       const fullBody = extractBodyFromMd(mdContent);
       if (fullBody) {
         email.body.text = fullBody;
         log('INFO', 'Loaded full body from stored email file', {
-          file: emailContext.incomingFileName,
+          path: mdPath,
           bodyLength: fullBody.length,
         });
       } else {
         log('WARN', 'Could not extract body from stored email file, using context bodyText', {
-          file: emailContext.incomingFileName,
+          path: mdPath,
         });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       log('WARN', 'Failed to read stored email file, using context bodyText as fallback', {
-        file: emailContext.incomingFileName,
+        incomingDir,
         error: msg,
       });
     }
@@ -275,7 +284,7 @@ async function handleReplyEmail(
   // 8. Store reply in thread folder (reuses auto-reply.md format)
   try {
     const storage = new EmailStorage(config.workspace);
-    await storage.storeReply(threadPath, message, email);
+    await storage.storeReply(threadPath, message, email, emailContext.incomingMessageDir);
     log('INFO', 'Reply stored', { threadPath });
   } catch (error) {
     // Non-fatal: email was already sent, just log the storage failure

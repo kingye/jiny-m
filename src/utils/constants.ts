@@ -21,6 +21,13 @@ export const DEFAULT_REPLY_CONFIG = {
   },
 };
 
+export const DEFAULT_INBOUND_ATTACHMENT_CONFIG = {
+  enabled: false,
+  allowedExtensions: ['.pdf', '.pptx', '.docx', '.xlsx', '.png', '.jpg', '.txt', '.md'],
+  maxFileSize: '25mb',
+  maxAttachmentsPerEmail: 10,
+};
+
 export const DEFAULT_WATCH_CONFIG = {
   checkInterval: 30,
   maxRetries: 5,

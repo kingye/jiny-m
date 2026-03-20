@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { GeneratedFile, AttachmentConfig } from '../types/index';
 import { logger } from './logger';
+import { parseFileSize } from '../utils/helpers';
 
 export function extractAttachmentCommands(text: string): string[] {
   const commands: string[] = [];
@@ -77,8 +78,8 @@ export async function prepareCommandAttachments(
         continue;
       }
 
-      if (stats.size > attachmentConfig.maxFileSize) {
-        logger.warn('File exceeds size limit', { filename, size: stats.size, maxSize: attachmentConfig.maxFileSize });
+      if (stats.size > parseFileSize(attachmentConfig.maxFileSize)) {
+        logger.warn('File exceeds size limit', { filename, size: stats.size, maxSize: parseFileSize(attachmentConfig.maxFileSize) });
         continue;
       }
 

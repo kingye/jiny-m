@@ -230,6 +230,7 @@ export class EmailParser {
               size: att.size || 0,
               contentId: att.contentId,
               disposition: att.contentDisposition,
+              content: att.content, // Preserve binary Buffer for inbound attachment saving
             }))
           : undefined,
         threadId,

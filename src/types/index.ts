@@ -38,6 +38,7 @@ export interface Pattern {
   subject?: SubjectPattern;
   caseSensitive?: boolean;
   enabled?: boolean;
+  inboundAttachments?: InboundAttachmentConfig;
 }
 
 export interface SenderPattern {
@@ -81,8 +82,15 @@ export interface OpenCodeConfig {
 
 export interface AttachmentConfig {
   enabled: boolean;
-  maxFileSize: number;  // bytes, default: 10MB
+  maxFileSize: number | string;  // bytes or human-readable like "10mb"
   allowedExtensions: string[];  // default: .ppt, .pptx, .doc, .docx, .txt, .md
+}
+
+export interface InboundAttachmentConfig {
+  enabled: boolean;
+  allowedExtensions: string[];   // e.g. [".pdf", ".pptx", ".docx", ".xlsx", ".png", ".jpg"]
+  maxFileSize: number | string;  // bytes or human-readable like "25mb"
+  maxAttachmentsPerEmail: number; // default: 10
 }
 
 export interface ReplyConfig {
@@ -133,6 +141,10 @@ export interface Attachment {
   size: number;
   contentId?: string;
   disposition?: string;
+  /** Binary content from mailparser (only present during processing, not serialized). */
+  content?: Buffer;
+  /** Path where inbound attachment was saved to disk (set after storage.saveAttachments()). */
+  savedPath?: string;
 }
 
 export interface PatternMatch {

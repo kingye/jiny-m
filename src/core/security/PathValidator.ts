@@ -62,13 +62,18 @@ export class PathValidator {
     }
   }
 
-  static validateFileSize(size: number, maxSize: number): void {
+  static validateFileSize(size: number, maxSize: number | string): void {
     if (!Number.isFinite(size) || size < 0) {
       throw new SecurityError('Invalid file size');
     }
 
-    if (size > maxSize) {
-      throw new SecurityError(`File size ${size} exceeds maximum allowed size of ${maxSize}`);
+    // Support human-readable sizes like "25mb"
+    const maxBytes = typeof maxSize === 'string'
+      ? (() => { const { parseFileSize } = require('../../utils/helpers'); return parseFileSize(maxSize); })()
+      : maxSize;
+
+    if (size > maxBytes) {
+      throw new SecurityError(`File size ${size} exceeds maximum allowed size of ${maxBytes}`);
     }
   }
 }

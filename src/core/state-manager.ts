@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir, unlink, appendFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, unlink, appendFile, readdir, rename } from 'node:fs/promises';
+import { join, dirname, basename } from 'node:path';
 import { ImapClient } from '../services/imap/index';
 import { logger } from './logger';
 
@@ -12,7 +12,7 @@ export interface MonitorState {
 }
 
 export class StateManager {
-  private static readonly CURRENT_MIGRATION_VERSION = 1;
+  private static readonly CURRENT_MIGRATION_VERSION = 2;
   private static readonly UID_SET_FILE = '.processed-uids.txt';
   private static stateFilePath: string = '.jiny/.state.json';
   private static stateDir: string = '.jiny';
@@ -47,7 +47,12 @@ export class StateManager {
         targetVersion: StateManager.CURRENT_MIGRATION_VERSION,
       });
 
-      await StateManager.runMigrationV1();
+      if (currentVersion < 1) {
+        await StateManager.runMigrationV1();
+      }
+      if (currentVersion < 2) {
+        await StateManager.runMigrationV2();
+      }
 
       StateManager.state.migrationVersion = StateManager.CURRENT_MIGRATION_VERSION;
       await StateManager.save();
@@ -154,6 +159,146 @@ export class StateManager {
       }
 
       throw error;
+    }
+  }
+
+  /**
+   * Migration v2: Move email .md files from .jiny/ to messages/<timestamp>/ structure.
+   * Groups received emails and replies into per-message directories.
+   */
+  private static async runMigrationV2(): Promise<void> {
+    try {
+      logger.info('Starting migration v2: Move .jiny/*.md to messages/ structure');
+
+      // Find the workspace folder from config
+      const { ConfigManager } = await import('../config');
+      const config = await ConfigManager.create();
+      const workspaceFolder = join(process.cwd(), config.getWorkspaceConfig().folder);
+
+      let threadDirs: string[];
+      try {
+        const entries = await readdir(workspaceFolder, { withFileTypes: true });
+        threadDirs = entries
+          .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+          .map(e => join(workspaceFolder, e.name));
+      } catch {
+        logger.info('No workspace directory found, skipping migration v2');
+        return;
+      }
+
+      let totalMoved = 0;
+
+      for (const threadDir of threadDirs) {
+        const jinyDir = join(threadDir, '.jiny');
+        let mdFiles: string[];
+
+        try {
+          const entries = await readdir(jinyDir);
+          mdFiles = entries
+            .filter(f => f.endsWith('.md'))
+            .sort();
+        } catch {
+          continue; // No .jiny/ or can't read — skip this thread
+        }
+
+        if (mdFiles.length === 0) continue;
+
+        const messagesDir = join(threadDir, 'messages');
+        await mkdir(messagesDir, { recursive: true });
+
+        // Separate received emails and auto-replies
+        const receivedFiles = mdFiles.filter(f => !f.includes('auto-reply'));
+        const replyFiles = mdFiles.filter(f => f.includes('auto-reply'));
+
+        // Extract timestamp from filename: "2026-03-19_23-02-20_Jiny_subject.md" → "2026-03-19_23-02-20"
+        const extractTimestamp = (filename: string): string => {
+          const match = filename.match(/^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})/);
+          return match?.[1] ?? filename.replace('.md', '');
+        };
+
+        // Build pairs: each received email may have a reply
+        // Reply files are paired with the closest preceding received email
+        const pairs: Array<{ received?: string; reply?: string; timestamp: string }> = [];
+
+        for (const received of receivedFiles) {
+          pairs.push({
+            received,
+            timestamp: extractTimestamp(received),
+          });
+        }
+
+        // Match replies to received emails
+        for (const reply of replyFiles) {
+          const replyTs = extractTimestamp(reply);
+          // Find closest preceding received email
+          let bestPair = pairs.length > 0 ? pairs[pairs.length - 1] : undefined;
+          for (let i = pairs.length - 1; i >= 0; i--) {
+            if (pairs[i]!.timestamp <= replyTs) {
+              bestPair = pairs[i];
+              break;
+            }
+          }
+          if (bestPair) {
+            bestPair.reply = reply;
+          } else {
+            // Orphan reply — create its own pair
+            pairs.push({ reply, timestamp: replyTs });
+          }
+        }
+
+        // Move files into messages/<timestamp>/ directories
+        for (const pair of pairs) {
+          let dirName = pair.timestamp;
+          // Check collision
+          try {
+            await readdir(join(messagesDir, dirName));
+            // Directory exists — add counter
+            let counter = 2;
+            while (true) {
+              try {
+                await readdir(join(messagesDir, `${pair.timestamp}_${counter}`));
+                counter++;
+              } catch {
+                dirName = `${pair.timestamp}_${counter}`;
+                break;
+              }
+            }
+          } catch {
+            // Directory doesn't exist — good
+          }
+
+          const msgDir = join(messagesDir, dirName);
+          await mkdir(msgDir, { recursive: true });
+
+          if (pair.received) {
+            await rename(
+              join(jinyDir, pair.received),
+              join(msgDir, 'received.md'),
+            );
+            totalMoved++;
+          }
+
+          if (pair.reply) {
+            await rename(
+              join(jinyDir, pair.reply),
+              join(msgDir, 'reply.md'),
+            );
+            totalMoved++;
+          }
+        }
+
+        logger.debug('Migrated thread', {
+          thread: basename(threadDir),
+          pairs: pairs.length,
+        });
+      }
+
+      logger.info('Migration v2 completed', { totalFilesMoved: totalMoved });
+    } catch (error) {
+      logger.error('Migration v2 failed', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Non-fatal: don't throw — old .jiny/ files will still work via legacy fallback
     }
   }
 

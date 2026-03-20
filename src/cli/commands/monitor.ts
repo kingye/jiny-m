@@ -1,4 +1,4 @@
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { EmailMonitor } from '../../services/imap/monitor';
 import type { GeneratedFile, AttachmentConfig, Email } from '../../types';
 import { ConfigManager } from '../../config';
@@ -8,6 +8,7 @@ import { OpenCodeService } from '../../services/opencode';
 import { OutputFormatter } from '../../output';
 import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
+import { parseFileSize } from '../../utils/helpers';
 import { CommandRegistry } from '../../core/command-handler/CommandRegistry';
 import { EmailCommandExtractor } from '../../core/command-parser';
 
@@ -108,14 +109,18 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       onMatch: async (email, patternMatch) => {
         console.log(formatter.format(email));
 
+        // Find the matched pattern's inboundAttachments config
+        const matchedPattern = patterns.find(p => p.name === patternMatch.patternName);
+        const inboundAttachmentConfig = matchedPattern?.inboundAttachments;
+
         // Store email as markdown in thread folder
         let threadPath: string | undefined;
-        let storedEmailFile: string | undefined;
+        let messageDir: string | undefined;
         try {
-          const result = await storage.store(email, patternMatch);
+          const result = await storage.store(email, patternMatch, inboundAttachmentConfig);
           threadPath = result.threadPath;
-          storedEmailFile = basename(result.filePath);
-          logger.info('Email saved to workspace', { file: result.filePath, pattern: patternMatch.patternName });
+          messageDir = result.messageDir;
+          logger.info('Email saved to workspace', { messageDir: result.messageDir, pattern: patternMatch.patternName });
         } catch (err) {
           logger.error('Failed to save email to workspace', { error: err instanceof Error ? err.message : 'Unknown error' });
         }
@@ -132,7 +137,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
               smtpService,
               options,
               monitorInstance,
-              storedEmailFile
+              messageDir
             );
           } catch (err) {
             logger.error('Failed to send auto-reply', { error: err instanceof Error ? err.message : 'Unknown error' });
@@ -166,7 +171,7 @@ async function handleAutoReply(
   smtpService: SmtpService,
   options: MonitorCommandOptions,
   monitorInstance: any,
-  storedEmailFile?: string
+  messageDir?: string
 ): Promise<void> {
   // Extract commands from email body
   const extractor = new EmailCommandExtractor();
@@ -227,7 +232,7 @@ async function handleAutoReply(
   if (replyConfig.mode === 'opencode' && opencodeService) {
     // Generate AI reply (OpenCode may use MCP reply_email tool to send directly)
     logger.info('Generating AI reply...', { to: email.from });
-    const aiReply = await opencodeService.generateReply(email, threadPath, storedEmailFile);
+    const aiReply = await opencodeService.generateReply(email, threadPath, messageDir);
 
     // If the MCP reply_email tool was used, the reply was already sent and stored
     if (aiReply.replySentByTool) {
@@ -241,7 +246,7 @@ async function handleAutoReply(
 
     if (!replyText || replyText.trim().length === 0) {
       logger.warn('Generated reply is empty, skipping send', { to: email.from });
-      await storage.storeReply(threadPath, '[Empty reply - not sent]', email);
+      await storage.storeReply(threadPath, '[Empty reply - not sent]', email, messageDir);
       return;
     }
 
@@ -259,7 +264,7 @@ async function handleAutoReply(
       );
     }
 
-    await storage.storeReply(threadPath, replyText, email);
+    await storage.storeReply(threadPath, replyText, email, messageDir);
   } else if (replyConfig.mode === 'static') {
     replyText = replyConfig.text || '';
   } else {
@@ -300,11 +305,11 @@ async function prepareAttachments(
       }
 
       const stats = await fs.promises.stat(filePath);
-      if (stats.size > attachmentConfig.maxFileSize) {
+      if (stats.size > parseFileSize(attachmentConfig.maxFileSize)) {
         logger.warn('File exceeds size limit, skipping attachment', {
           filename: file.filename,
           size: stats.size,
-          maxSize: attachmentConfig.maxFileSize,
+          maxSize: parseFileSize(attachmentConfig.maxFileSize),
         });
         continue;
       }
@@ -364,8 +369,8 @@ async function detectNewFiles(
       const stats = await fs.promises.stat(filePath);
       if (stats.isDirectory()) continue;
 
-      if (stats.size > attachmentConfig.maxFileSize) {
-        logger.warn('File exceeds size limit, skipping', { filename: file, size: stats.size, maxSize: attachmentConfig.maxFileSize });
+      if (stats.size > parseFileSize(attachmentConfig.maxFileSize)) {
+        logger.warn('File exceeds size limit, skipping', { filename: file, size: stats.size, maxSize: parseFileSize(attachmentConfig.maxFileSize) });
         continue;
       }
 

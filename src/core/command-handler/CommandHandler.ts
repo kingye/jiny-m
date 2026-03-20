@@ -12,7 +12,7 @@ export interface CommandContext {
   };
   threadPath: string;
   config: {
-    maxFileSize: number;
+    maxFileSize: number | string;
     allowedExtensions: string[];
   };
   args?: string[];
