@@ -12,9 +12,8 @@ import { program } from 'commander';
 import { monitorCommand } from './src/cli/commands/monitor';
 import { initConfigCommand, validateConfigCommand } from './src/cli/commands/config';
 import { listPatternsCommand, addPatternCommand } from './src/cli/commands/patterns';
+import pkg from './package.json';
 
-// Read version from package.json so it stays in sync
-const pkg = await Bun.file(join(import.meta.dir, 'package.json')).json();
 const VERSION: string = pkg.version;
 
 // Parse --workdir early (before commander), since it must take effect before any other code runs.
