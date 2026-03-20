@@ -148,16 +148,11 @@ export class OpenCodeService {
   }
 
   /**
-   * Build the model string in "provider/model" format for opencode.json.
+   * Get the model string for opencode.json ("provider/model" format).
    * Returns undefined if no model is configured (OpenCode uses its global default).
    */
   private getModelString(): string | undefined {
-    if (!this.config.provider && !this.config.model) return undefined;
-    if (this.config.provider && this.config.model) {
-      return `${this.config.provider}/${this.config.model}`;
-    }
-    if (this.config.model) return this.config.model;
-    return undefined;
+    return this.config.model || undefined;
   }
 
   /**

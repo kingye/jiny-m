@@ -167,9 +167,8 @@ interface ReplyConfig {
 interface OpenCodeConfig {
   enabled: boolean;
   hostname?: string;
-  provider?: string;
-  model?: string;                   // Primary model (e.g. "Pro/zai-org/GLM-4.7")
-  smallModel?: string;              // Small model for lightweight tasks (e.g. title generation)
+  model?: string;                   // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
+  smallModel?: string;              // "provider/model" format for lightweight tasks
   systemPrompt?: string;
   includeThreadHistory?: boolean;
   contextSecret?: string;          // Reserved for future HMAC context validation
@@ -957,9 +956,8 @@ interface Config {
     "mode": "opencode",
     "opencode": {
       "enabled": true,
-      "provider": "SiliconFlow",
-      "model": "Pro/zai-org/GLM-5",
-      "contextSecret": "${JINY_CONTEXT_SECRET}",
+      "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
+      "smallModel": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
       "systemPrompt": "You are an email-based AI assistant.\nRespond professionally and concisely.\nReference previous context when relevant.",
       "includeThreadHistory": true
     },

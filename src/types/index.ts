@@ -73,9 +73,8 @@ export interface ThreadSession {
 export interface OpenCodeConfig {
   enabled: boolean;
   hostname?: string;
-  provider?: string;
-  model?: string;
-  smallModel?: string;
+  model?: string;                   // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
+  smallModel?: string;              // "provider/model" format for lightweight tasks
   systemPrompt?: string;
   includeThreadHistory?: boolean;
   contextSecret?: string;
