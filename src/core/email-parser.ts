@@ -18,15 +18,19 @@ function deriveThreadName(subject: string, additionalPrefixes?: string[]): strin
     const sortedPrefixes = [...additionalPrefixes].sort((a, b) => b.length - a.length);
     
     for (const prefix of sortedPrefixes) {
-      // Add word boundary to avoid partial matches
+      // Match prefix followed by optional whitespace and any common separator
+      // Separators: : ： - _ ~ | / & $ # @ ! + = > » →
       const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escapedPrefix}\\s*[:：]?\\s*`, 'i');
+      const regex = new RegExp(`^${escapedPrefix}\\s*[:\\-_~|/&$#@!+=»→：]?\\s*`, 'i');
       if (regex.test(result)) {
         result = result.replace(regex, '');
         break; // Only strip one additional prefix (the matched one)
       }
     }
   }
+  
+  // Strip any remaining leading punctuation/separators
+  result = result.replace(/^[\s\-_~|/&$#@!+=»→：:]+/, '');
   
   return result.trim() || 'untitled';
 }
