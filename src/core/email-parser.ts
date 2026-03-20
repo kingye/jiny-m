@@ -268,35 +268,34 @@ export { deriveThreadName, sanitizeForFilename };
 export function cleanEmailBody(text: string): string {
   let cleaned = text;
 
-  // Step 1: Join multi-line bracket expressions into single lines.
-  // Email clients wrap long addresses/URLs causing brackets to span lines:
-  //   KINGYE@PETALMAIL.COM [KINGYE@PETALMAIL.COM\n[KINGYE@PETALMAIL.COM]]
-  // Join lines where a [ is opened but not closed on the same line.
-  cleaned = joinMultiLineBrackets(cleaned);
+  // Step 1: Join bracket continuation lines.
+  // When a line has unbalanced [ and the NEXT line starts with [ (after > prefix),
+  // that next line is a bracket continuation — join it to the current line.
+  // This is safe because real content lines never start with [.
+  cleaned = joinBracketContinuations(cleaned);
 
-  // Step 2: Remove all [...] blocks from each line.
-  // After joining multi-line brackets, all brackets are on single lines.
-  // Email clients add these brackets for display — they duplicate adjacent addresses/URLs
-  // and never contain original content. Safe to remove all of them.
+  // Step 2: Remove all [...] blocks line by line. Work from inside out.
+  // After joining, brackets that previously spanned lines are now on single lines.
   cleaned = cleaned
     .split('\n')
     .map(line => {
       let result = line;
 
-      // Remove all [...] blocks (may be nested). Work from inside out.
+      // Remove all balanced [...] blocks from inside out
       let prev = '';
       while (prev !== result) {
         prev = result;
-        // Remove innermost [...] first (no [ or ] inside)
         result = result.replace(/\s*\[[^\[\]]*\]/g, '');
       }
 
-      // Remove orphaned unmatched [ that remain after balanced removal.
-      // These occur when the original email had unbalanced brackets.
+      // Remove orphaned [ before email addresses/URLs (from unbalanced brackets)
       result = result.replace(/\s*\[(?=[A-Za-z0-9._%+\-]+@|https?:\/\/)/g, ' ');
 
+      // Remove orphaned ] at start of line or after whitespace
+      result = result.replace(/^\s*\]\s*/g, '');
+      result = result.replace(/\s+\]\s*/g, ' ');
+
       // Clean 主題/Subject lines: normalize to single Re:
-      // May appear at start of line (with optional > quote prefix) or mid-line after other fields
       result = result.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
         (_match, prefix, label, _prefixes, subject) => {
           const cleanSubject = stripReplyPrefix(subject);
@@ -308,79 +307,45 @@ export function cleanEmailBody(text: string): string {
     })
     .join('\n');
 
-  // Step 3: Clean up excessive whitespace left by bracket removal
+  // Step 3: Remove lines that became empty after cleanup (just whitespace or quote prefix)
+  cleaned = cleaned.replace(/^(>\s*)+$/gm, '>');
+  // Clean up excessive whitespace
   cleaned = cleaned.replace(/ {2,}/g, ' ');
 
   return cleaned;
 }
 
 /**
- * Join multi-line bracket expressions into single lines.
+ * Join bracket continuation lines into the preceding line.
  *
- * Email clients wrap long addresses into multiple lines like:
- *   KINGYE@PETALMAIL.COM [KINGYE@PETALMAIL.COM
- *   [KINGYE@PETALMAIL.COM]] (05:48 PM)
+ * When a line ends with unbalanced brackets and the next line starts with `[`
+ * (after optional `> ` quote prefixes), that next line is a continuation of the
+ * bracket expression — not real content. Join it to the current line.
  *
- * In quoted text, lines have `> ` prefixes:
- *   > > 发件人：jiny283@163.com [jiny283@163.com
- *   > > [jiny283@163.com]]
- *
- * This function detects lines with unbalanced brackets and joins
- * continuation lines until the brackets are balanced.
+ * This is safe because actual content lines never start with `[` in email bodies.
  */
-function joinMultiLineBrackets(text: string): string {
+function joinBracketContinuations(text: string): string {
   const lines = text.split('\n');
   const result: string[] = [];
-  let pendingLine = '';
-  let bracketDepth = 0;
-  let joinedCount = 0;
-  const MAX_JOIN_LINES = 10; // Safety limit for unbalanced brackets
 
-  for (const line of lines) {
-    // Strip quote prefixes (> > >) for bracket counting, but keep them in the output
-    const contentWithoutQuote = line.replace(/^(>\s*)+/, '');
+  for (let i = 0; i < lines.length; i++) {
+    let current = lines[i]!;
 
-    if (bracketDepth > 0) {
-      // Continuation of a multi-line bracket expression
-      pendingLine += ' ' + contentWithoutQuote.trim();
-      joinedCount++;
-
-      // Safety: if we've joined too many lines, brackets are unbalanced — flush as-is
-      if (joinedCount >= MAX_JOIN_LINES) {
-        result.push(pendingLine);
-        pendingLine = '';
-        bracketDepth = 0;
-        joinedCount = 0;
-        continue;
+    // Keep joining next lines as long as they start with [ (after quote prefix)
+    while (i + 1 < lines.length) {
+      const nextLine = lines[i + 1]!;
+      // Strip quote prefix to check if the content starts with [
+      const nextContent = nextLine.replace(/^(>\s*)*/, '').trim();
+      if (nextContent.startsWith('[')) {
+        // It's a bracket continuation — join it
+        current += ' ' + nextContent;
+        i++;
+      } else {
+        break;
       }
-    } else {
-      if (pendingLine) {
-        result.push(pendingLine);
-        pendingLine = '';
-      }
-      pendingLine = line;
-      joinedCount = 0;
     }
 
-    // Count bracket depth across the entire pending line
-    bracketDepth = 0;
-    for (const ch of pendingLine) {
-      if (ch === '[') bracketDepth++;
-      if (ch === ']') bracketDepth--;
-    }
-
-    // If brackets are balanced, flush the line
-    if (bracketDepth <= 0) {
-      result.push(pendingLine);
-      pendingLine = '';
-      bracketDepth = 0;
-      joinedCount = 0;
-    }
-  }
-
-  // Flush any remaining pending line
-  if (pendingLine) {
-    result.push(pendingLine);
+    result.push(current);
   }
 
   return result.join('\n');

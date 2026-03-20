@@ -19,6 +19,7 @@ describe('cleanEmailBody', () => {
       expect(result).not.toContain('[');
       expect(result).not.toContain(']');
       expect(result).toContain('KINGYE@PETALMAIL.COM');
+      // (05:48 PM) may be on same line or next line depending on bracket removal
       expect(result).toContain('(05:48 PM)');
     });
 
