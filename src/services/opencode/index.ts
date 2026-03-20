@@ -589,6 +589,14 @@ export class OpenCodeService {
                 toolLoggedStatus.set(part.id, toolStatus);
                 logger.info('AI calling tool', { tool: part.tool, status: toolStatus });
 
+                // Log tool details on first meaningful status (not on completed/error — already seen)
+                if ((toolStatus === 'pending' || toolStatus === 'running') && part.state?.input) {
+                  const details = this.summarizeToolInput(part.tool, part.state.input as Record<string, unknown>);
+                  if (details) {
+                    logger.info('Tool details', details);
+                  }
+                }
+
                 // Log tool input when reply_email is first called (pending state has the AI's arguments)
                 if (part.tool.includes('reply_email') && toolStatus === 'pending' && part.state?.input) {
                   const input = part.state.input;
@@ -924,6 +932,80 @@ export class OpenCodeService {
     // Development mode: use bun run with the .ts source
     const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
     return { toolCommand: ['bun', 'run', toolPath] };
+  }
+
+  /**
+   * Extract a concise summary from tool input for logging.
+   * Returns null for tools that already have their own detailed logging (reply_email).
+   */
+  private summarizeToolInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> | null {
+    // Skip reply_email — already has its own detailed DEBUG logging
+    if (toolName.includes('reply_email') || toolName.includes('reply_message')) {
+      return null;
+    }
+
+    const str = (val: unknown, maxLen = 200): string => {
+      if (typeof val === 'string') return val.length > maxLen ? val.substring(0, maxLen) + '...' : val;
+      if (val === undefined || val === null) return '';
+      return String(val);
+    };
+
+    if (toolName === 'bash' || toolName.endsWith('_bash')) {
+      return {
+        command: str(input.command),
+        ...(input.workdir ? { workdir: str(input.workdir) } : {}),
+      };
+    }
+
+    if (toolName === 'read' || toolName.endsWith('_read')) {
+      return { path: str(input.filePath || input.path) };
+    }
+
+    if (toolName === 'write' || toolName.endsWith('_write')) {
+      return { path: str(input.filePath || input.path) };
+    }
+
+    if (toolName === 'edit' || toolName.endsWith('_edit')) {
+      return { path: str(input.filePath || input.path) };
+    }
+
+    if (toolName === 'glob' || toolName.endsWith('_glob')) {
+      return {
+        pattern: str(input.pattern),
+        ...(input.path ? { path: str(input.path) } : {}),
+      };
+    }
+
+    if (toolName === 'grep' || toolName.endsWith('_grep')) {
+      return {
+        pattern: str(input.pattern),
+        ...(input.include ? { include: str(input.include) } : {}),
+        ...(input.path ? { path: str(input.path) } : {}),
+      };
+    }
+
+    if (toolName === 'task' || toolName.endsWith('_task')) {
+      return {
+        description: str(input.description),
+        ...(input.subagent_type ? { type: str(input.subagent_type) } : {}),
+      };
+    }
+
+    if (toolName === 'webfetch' || toolName.endsWith('_webfetch')) {
+      return { url: str(input.url) };
+    }
+
+    if (toolName === 'skill' || toolName.endsWith('_skill')) {
+      return { name: str(input.name) };
+    }
+
+    // Fallback: show input keys for unknown tools
+    const keys = Object.keys(input);
+    if (keys.length > 0) {
+      return { inputKeys: keys };
+    }
+
+    return null;
   }
 
 }
