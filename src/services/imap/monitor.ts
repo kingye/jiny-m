@@ -216,8 +216,8 @@ export class EmailMonitor {
     }
 
     const mailbox = await (this.imapClient as any).client.mailboxOpen(this.folder);
-    const serverUidValidity = mailbox.uidValidity;
-    const stateUidValidity = StateManager.getState().uidValidity;
+    const serverUidValidity = Number(mailbox.uidValidity);
+    const stateUidValidity = Number(StateManager.getState().uidValidity);
 
     if (serverUidValidity !== stateUidValidity) {
       logger.warn('UIDVALIDITY changed, resetting UID set', {

@@ -124,11 +124,11 @@ export class ImapClient {
     
     try {
       const mailbox = await this.client.mailboxOpen(folder);
-      logger.info(`Opened mailbox: ${folder}`, { total: mailbox.exists });
+      logger.info(`Opened mailbox: ${folder}`, { total: Number(mailbox.exists) });
       
       const messages: ImapEmail[] = [];
       
-      const exists = mailbox.exists ?? 0;
+      const exists = Number(mailbox.exists) ?? 0;
       const startUid = exists ? Math.max(1, exists - limit + 1) : 1;
       
       if (exists === 0) {
@@ -137,7 +137,7 @@ export class ImapClient {
       
       for await (const message of this.client.fetch(`${startUid}:${exists}`, { envelope: true, uid: true })) {
         messages.push({
-          uid: message.uid,
+          uid: Number(message.uid),
           flags: message.flags || [],
           envelope: {
             from: message.envelope.from || [],
@@ -201,7 +201,7 @@ export class ImapClient {
     logger.debug(`Fetching range ${start}:${end} from ${folder}`);
 
     const mailbox = await this.client.mailboxOpen(folder);
-    logger.debug(`Mailbox has ${mailbox.exists} messages, UIDVALIDITY: ${mailbox.uidValidity}`);
+    logger.debug(`Mailbox has ${mailbox.exists} messages, UIDVALIDITY: ${Number(mailbox.uidValidity)}`);
 
     for await (const msg of this.client.fetch(`${start}:${end}`, {
       envelope: true,
@@ -209,7 +209,7 @@ export class ImapClient {
     })) {
       messages.push({
         seq: msg.seq,
-        uid: msg.uid,
+        uid: Number(msg.uid),
         flags: msg.flags || [],
         envelope: {
           from: msg.envelope.from || [],
@@ -230,14 +230,14 @@ export class ImapClient {
   async getMailboxCount(folder: string = 'INBOX'): Promise<number> {
     this.ensureConnected();
     const mailbox = await this.client.mailboxOpen(folder);
-    return mailbox.exists;
+    return Number(mailbox.exists);
   }
   async getNewestUid(folder: string = 'INBOX'): Promise<number | null> {
     this.ensureConnected();
     
     try {
       const mailbox = await this.client.mailboxOpen(folder);
-      return mailbox.exists;
+      return Number(mailbox.exists);
     } catch (error) {
       logger.error('Failed to get newest UID', { folder, error: error instanceof Error ? error.message : 'Unknown error' });
       return null;
@@ -249,7 +249,7 @@ export class ImapClient {
     
     try {
       const mailbox = await this.client.mailboxOpen(folder);
-      const currentCount = mailbox.exists || 0;
+      const currentCount = Number(mailbox.exists) || 0;
       
       logger.debug(`Searching for new messages: last count ${lastMessageCount}, current count ${currentCount}`);
       
@@ -272,7 +272,7 @@ export class ImapClient {
           for await (const message of this.client.fetch(seq, { envelope: true, uid: true })) {
             messages.push({
               seq: seq,
-              uid: message.uid,
+              uid: Number(message.uid),
               flags: message.flags || [],
               envelope: {
                 from: message.envelope.from || [],
