@@ -175,6 +175,36 @@ describe('cleanEmailBody', () => {
       const result = cleanEmailBody(input);
       expect(result).toBe(input);
     });
+
+    test('should preserve brackets with non-address/URL content', () => {
+      const input = 'This is [a note] in brackets';
+      const result = cleanEmailBody(input);
+      expect(result).toBe(input);
+    });
+
+    test('should preserve nested brackets with text content', () => {
+      const input = 'Nested: [[[it is a text]]]';
+      const result = cleanEmailBody(input);
+      expect(result).toBe(input);
+    });
+
+    test('should preserve array syntax', () => {
+      const input = 'Array syntax: arr[0] = value';
+      const result = cleanEmailBody(input);
+      expect(result).toBe(input);
+    });
+
+    test('should preserve references like [1] [2]', () => {
+      const input = 'Reference [1] and [2]';
+      const result = cleanEmailBody(input);
+      expect(result).toBe(input);
+    });
+
+    test('should preserve JSON with arrays', () => {
+      const input = 'JSON example: {"key": ["value1", "value2"]}';
+      const result = cleanEmailBody(input);
+      expect(result).toBe(input);
+    });
   });
 
   describe('full real-world email body', () => {

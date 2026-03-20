@@ -274,26 +274,40 @@ export function cleanEmailBody(text: string): string {
   // This is safe because real content lines never start with [.
   cleaned = joinBracketContinuations(cleaned);
 
-  // Step 2: Remove all [...] blocks line by line. Work from inside out.
-  // After joining, brackets that previously spanned lines are now on single lines.
+  // Step 2: Remove [...] blocks that contain email addresses or URLs, line by line.
+  // Only remove brackets whose content looks like an address/URL duplicate.
+  // Preserve brackets with other content (text notes, array syntax, references, etc.)
   cleaned = cleaned
     .split('\n')
     .map(line => {
       let result = line;
 
-      // Remove all balanced [...] blocks from inside out
+      // Repeatedly remove innermost [...] blocks that contain email addresses or URLs
       let prev = '';
       while (prev !== result) {
         prev = result;
-        result = result.replace(/\s*\[[^\[\]]*\]/g, '');
+        // Remove [email@domain...] blocks (may contain nested brackets already removed)
+        result = result.replace(/\s*\[([^\[\]]*@[^\[\]]*)\]/g, (match, content) => {
+          // Only remove if content looks like an email address pattern
+          if (/^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+/.test(content.trim())) return '';
+          return match; // preserve non-email brackets
+        });
+        // Remove [https://...] or [http://...] blocks
+        result = result.replace(/\s*\[([^\[\]]*)\]/g, (match, content) => {
+          const trimmed = content.trim();
+          if (/^https?:\/\//.test(trimmed)) return '';
+          if (/%5[BD]/i.test(trimmed)) return ''; // URL-encoded brackets
+          return match; // preserve non-URL brackets
+        });
       }
 
       // Remove orphaned [ before email addresses/URLs (from unbalanced brackets)
       result = result.replace(/\s*\[(?=[A-Za-z0-9._%+\-]+@|https?:\/\/)/g, ' ');
 
-      // Remove orphaned ] at start of line or after whitespace
-      result = result.replace(/^\s*\]\s*/g, '');
-      result = result.replace(/\s+\]\s*/g, ' ');
+      // Remove orphaned ] that appear right after an email address or at line start
+      // (leftover from multi-line bracket removal)
+      result = result.replace(/(@[A-Za-z0-9.\-]+)\s*\]+/g, '$1');
+      result = result.replace(/^\s*\]+\s*/g, '');
 
       // Clean 主題/Subject lines: normalize to single Re:
       result = result.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
