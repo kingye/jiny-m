@@ -84,13 +84,16 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  2. Save inbound attachments (whitelisted)                       │
 │  3. PromptBuilder.buildPrompt(msg) → prompt with <reply_context> │
 │  4. OpenCode.generateReply(msg) — SSE streaming, may take mins   │
-│  5. <reply_context> carries channel type + channelMetadata        │
+│  5. <reply_context> is a base64 opaque token (metadata only)      │
 │                                                                   │
 │  ┌─────────────────────────────────────────┐                     │
 │  │  MCP Tool: reply_message                │                     │
-│  │  1. Read context.channel                │                     │
-│  │  2. Instantiate OutboundAdapter         │                     │
-│  │  3. adapter.sendReply(...)              │                     │
+│  │  1. Decode base64 context token         │                     │
+│  │  2. Read received.md → full body        │                     │
+│  │  3. Build full reply (AI + quoted hst)  │                     │
+│  │  4. Instantiate OutboundAdapter         │                     │
+│  │  5. adapter.sendReply(fullReplyText)    │                     │
+│  │  6. storage.storeReply(fullReplyText)   │                     │
 │  └──────────────────┬──────────────────────┘                     │
 │                     │                                             │
 │  6. Fallback: ThreadManager sends via OutboundAdapter            │
@@ -106,7 +109,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │ Email Outbound│  │FeiShu Outbound│  │ Slack Outbound│ (future)│
 │  │  (SMTP)       │  │  (API)        │  │  (API)        │        │
 │  │               │  │               │  │               │        │
-│  │ quoteOriginal │  │ format for    │  │ format for    │        │
+│  │ markdown→HTML │  │ format for    │  │ format for    │        │
 │  │ threading hdrs│  │ feishu msg    │  │ slack blocks  │        │
 │  │ markdown→HTML │  │ card/rich text│  │ mrkdwn format │        │
 │  └───────────────┘  └───────────────┘  └───────────────┘        │
@@ -186,6 +189,122 @@ Email arrives
             → MessageStorage: store full reply → reply.md (= what was sent)
 ```
 
+### End-to-End Sequence Diagram
+
+```
+┌──────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ IMAP │  │ Inbound  │  │ Message  │  │  Thread  │  │ Prompt   │  │ OpenCode │  │  Reply   │  │  SMTP    │
+│Server│  │ Adapter  │  │ Storage  │  │ Manager  │  │ Builder  │  │  (AI)    │  │  Tool    │  │ Service  │
+└──┬───┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+   │           │             │             │             │             │             │             │
+   │ new email │             │             │             │             │             │             │
+   ├──────────>│             │             │             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │      parse raw email    │             │             │             │             │             │
+   │      clean at boundary: │             │             │             │             │             │
+   │       stripReplyPrefix  │             │             │             │             │             │
+   │         (subject)       │             │             │             │             │             │
+   │       cleanEmailBody    │             │             │             │             │             │
+   │         (body text)     │             │             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │      clean InboundMessage             │             │             │             │             │
+   │           ├─────────────┼────────────>│             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │  store()    │             │             │             │             │
+   │           │             │<────────────┤             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │        write received.md  │             │             │             │             │
+   │           │        (as-is, no logic)  │             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │ buildPrompt()             │             │             │
+   │           │             │             ├────────────>│             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │  read received.md + reply.md           │             │             │
+   │           │             │  (conversation history)   │             │             │             │
+   │           │             │<─────────────┤             │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │        stripQuotedHistory  │             │             │             │
+   │           │             │        + truncate for      │             │             │             │
+   │           │             │          token budget      │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │        serializeContext()  │             │             │             │
+   │           │             │        → base64 token      │             │             │             │
+   │           │             │          (metadata only,   │             │             │             │
+   │           │             │           no body)         │             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │  prompt:    │             │             │             │
+   │           │             │             │  stripped body            │             │             │
+   │           │             │             │  + base64 token           │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │ generateReply()           │             │             │
+   │           │             │             ├─────────────┼────────────>│             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │    AI processes prompt    │             │
+   │           │             │             │             │    calls reply_message:   │             │
+   │           │             │             │             │      message = AI reply   │             │
+   │           │             │             │             │      context = base64     │             │
+   │           │             │             │             │      attachments = [...]  │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │             ├────────────>│             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │        decode base64 token│             │
+   │           │             │             │             │        → channel, sender, │             │
+   │           │             │             │             │          recipient,       │             │
+   │           │             │             │             │          incomingMsgDir   │             │
+   │           │             │             │             │             │             │             │
+   │           │             │  read received.md         │             │             │             │
+   │           │             │  (full clean body)        │             │             │             │
+   │           │             │<──────────────────────────┼─────────────┤             │             │
+   │           │             │──────────────────────────>│─────────────>             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │        formatQuotedReply()│             │
+   │           │             │             │             │        (no stripping,     │             │
+   │           │             │             │             │         just formatting)  │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │        fullReplyText =    │             │
+   │           │             │             │             │          AI reply text    │             │
+   │           │             │             │             │          + quoted history │             │
+   │           │             │             │             │          (markdown)       │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │   sendReply(fullReplyText)│             │
+   │           │             │             │             │             ├────────────>│             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │             │   markdown  │             │
+   │           │             │             │             │             │    → HTML   │             │
+   │           │             │             │             │             │   add Re:   │             │
+   │           │             │             │             │             │   add hdrs  │             │
+   │           │             │             │             │             │   send SMTP │────> recipient
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │             │  {messageId}│             │
+   │           │             │             │             │             │<────────────┤             │
+   │           │             │             │             │             │             │             │
+   │           │             │  storeReply(fullReplyText)│             │             │             │
+   │           │             │<──────────────────────────┼─────────────┤             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │  write reply.md           │             │             │             │
+   │           │             │  (= exactly what was sent)│             │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │  write signal file        │             │
+   │           │             │             │             │  (.jiny/reply-sent.flag)  │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │             │  return success           │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │  detect signal file /     │             │             │
+   │           │             │             │  SSE tool completion      │             │             │
+   │           │             │             │             │             │             │             │
+   │           │             │             │  worker done,             │             │             │
+   │           │             │             │  pick next from queue     │             │             │
+```
+
+**Key invariants in this flow:**
+- **InboundAdapter** is the only place where data is cleaned (subject + body)
+- **MessageStorage** stores data as-is, no transformation
+- **PromptBuilder** is the only place where history is stripped (for AI token budget)
+- **Reply Tool** is the only place where the full reply is assembled (AI text + quoted history)
+- **SmtpService** is a dumb transport: markdown→HTML + headers + send
+- **ReplyContext** is an opaque base64 token carrying only metadata references, never content
+- **reply.md** = exactly what the recipient receives (minus HTML formatting)
+
 ## Core Abstractions
 
 ### Channel Types (`src/channels/types.ts`)
@@ -247,6 +366,8 @@ interface OutboundAdapter {
     replyText: string,
     attachments?: Array<{ filename: string; path: string; contentType: string }>
   ): Promise<{ messageId: string }>;
+  // Optional: send a fresh (non-reply) alert/notification email
+  sendAlert?(recipient: string, subject: string, body: string): Promise<{ messageId: string }>;
 }
 
 interface ChannelPattern {
@@ -420,19 +541,26 @@ promptWithProgress() (SSE streaming):
 OpenCode calls reply_message MCP tool
        ↓
 MCP Tool (reply-tool.ts):
-  1. Deserialize ReplyContext → get context.channel
+  1. Decode base64 context token → validate required fields
   2. Instantiate OutboundAdapter for context.channel
      - "email" → EmailOutboundAdapter (SMTP)
      - "feishu" → FeiShuOutboundAdapter (future)
-  3. Read messages/<incomingMessageDir>/received.md for full body (quoted history)
-  4. adapter.sendReply(originalMessage, replyText, attachments)
-  5. MessageStorage.storeReply() → reply.md alongside received.md
-  6. Write .jiny/reply-sent.flag (signal file)
+  3. Read messages/<incomingMessageDir>/received.md for full body
+  4. Build fullReplyText = AI reply + formatQuotedReply(full body)
+  5. adapter.sendReply(originalMessage, fullReplyText, attachments)
+     → SmtpService: markdown→HTML, add Re: + threading headers, send
+  6. MessageStorage.storeReply(fullReplyText) → reply.md = what was sent
+  7. Write .jiny/reply-sent.flag (signal file)
        ↓
 Check replySentByTool:
-  1. SSE parts → tool call detected in real-time (check output for "Error:" prefix)
+  1. SSE parts → tool call detected in real-time (check output for "Error:" or "MCP error" prefix)
   2. checkToolUsed(accumulatedParts) — post-hoc
   3. checkSignalFile(.jiny/reply-sent.flag) — last-resort fallback
+       ↓
+Stale session detection:
+  If replySentByTool=true but signal file missing:
+    → Session is stale (OpenCode replayed cached results without invoking MCP tool)
+    → Delete session file, create new session, retry prompt once
        ↓
 If tool NOT used → ThreadManager fallback:
   → Get OutboundAdapter for message.channel
@@ -442,31 +570,35 @@ If tool NOT used → ThreadManager fallback:
 Worker picks next message from thread queue
 ```
 
+**Session lifecycle:**
+- Sessions are created on first use per thread and persisted in `.jiny/session.json`
+- On shutdown (SIGINT/SIGTERM): all session files are deleted to prevent stale sessions on restart
+- On stale session detection: session file is deleted and a new session is created for retry
+
 ### Context Management Strategy
 
 To balance context depth with token limits, the agent uses a multi-layered approach:
 
-1. **Thread Files (Durable)** - Last 5 markdown files stored in thread folder
+1. **Thread Files (Durable)** - Last 10 markdown files stored in thread folder
    - Includes both received messages and AI auto-replies
    - Files store full body (including quoted history) as canonical record
    - When loaded into prompt context, `stripQuotedHistory()` + truncation applied
-   - Files are limited to 400 chars each (1,000 chars total) in prompt
+   - Files are limited to 400 chars each (2,000 chars total) in prompt
 
 2. **OpenCode Session (Ephemeral)** - Conversation memory maintained by OpenCode
    - Persists only while server instance is alive
-   - Lost on jiny-m restart
+   - Deleted on shutdown to prevent stale sessions on restart
    - Contains condensed message history
    - More efficient than raw files
 
 3. **Incoming Message (Current)** - Latest message being processed
    - Body stripped of quoted reply history
-   - Topic cleaned of repeated Reply/Fwd prefixes
+   - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
    - Limited to 2,000 chars
 
 **Context Limits:**
 ```
 MAX_FILES_IN_CONTEXT = 10          // Total markdown files to load
-MAX_EMAIL_REPLY_FILES = 2          // Email reply files specifically
 MAX_BODY_IN_PROMPT = 2000          // Incoming message body
 MAX_PER_FILE = 400                 // Per-file context
 MAX_TOTAL_CONTEXT = 2000           // Combined thread context
@@ -475,7 +607,7 @@ MAX_TOTAL_PROMPT = 6000            // Total prompt to AI
 
 **Thread File Processing:**
 - Received files: Extract body (between `## Name (time)` and `---`), then `stripQuotedHistory()` at prompt load time
-- Reply files: Skipped (already visible in conversation history)
+- Reply files: Included with same extraction and stripping as received files
 - General files: Included as-is (useful for reference documents)
 - Method: `PromptBuilder.buildPromptContext()`
 
@@ -555,7 +687,7 @@ Thread files still provide recent conversation context
 
 OpenCode is given a `reply_message` MCP tool so the AI agent can send replies directly through the originating channel. The tool is a stateless local MCP server (`src/mcp/reply-tool.ts`) spawned via stdio transport, configured per-thread via `opencode.json`.
 
-The reply context (recipient, topic, channel, threading metadata) is serialized as a JSON block in the user prompt. The AI passes this context verbatim when calling the tool.
+The reply context (recipient, topic, channel, threading metadata) is base64-encoded and embedded in the user prompt as `<reply_context>BASE64_TOKEN</reply_context>`. The AI passes this opaque token unchanged when calling the tool. The token contains only metadata references — never message body content.
 
 ### Reply Context (`src/mcp/context.ts`)
 
@@ -565,40 +697,44 @@ interface ReplyContext {
   threadName: string;
   sender: string;                    // Who sent the original message
   recipient: string;                 // Who to reply to
-  topic: string;                     // Subject / title
+  topic: string;                     // Subject / title (cleaned at ingest, no Re:/回复: prefixes)
   timestamp: string;
-  contentPreview?: string;           // Stripped body for AI display
   incomingMessageDir?: string;       // For reading full body from messages/<dir>/received.md
   externalId?: string;               // Email: Message-ID; FeiShu: msg_id
   threadRefs?: string[];             // Email: References; FeiShu: thread_id
   uid: string;                       // Channel-specific UID
   channelMetadata?: Record<string, any>;
-  // Email: { messageId, references, inReplyTo, headers, fromName }
+  // Email: { inReplyTo, from }
   // FeiShu: { chatId, messageType, ... }
 }
 ```
 
 **Serialization helpers:**
-- `serializeContext(message: InboundMessage, threadName, incomingMessageDir?)` → JSON string
-- `deserializeAndValidateContext(json)` → validated `ReplyContext` (with JSON sanitization fallback for AI-corrupted input)
+- `serializeContext(message, threadName, incomingMessageDir?)` → base64-encoded string (JSON → base64)
+- `deserializeContext(encoded)` → validated `ReplyContext` (base64 → JSON → validate required fields)
 
 ### MCP Tool: `reply_message`
 
 ```
 MCP Server (stdio subprocess, cwd = thread dir):
-  1. Parse context JSON, validate required fields
+  Tool schema: message (string), context (string, opaque base64 token), attachments (string[], optional)
+
+  1. Decode base64 context token → JSON → validate required fields
   2. Read context.channel → determine which outbound adapter to use
   3. Load config from JINY_ROOT/.jiny/config.json
   4. Instantiate OutboundAdapter for context.channel:
      - "email" → EmailOutboundAdapter (loads SMTP config, creates SmtpService)
      - "feishu" → FeiShuOutboundAdapter (future)
   5. Validate attachments via PathValidator (exclude .opencode/, .jiny/)
-  6. Reconstruct InboundMessage from context
-  7. Read messages/<incomingMessageDir>/received.md → extract full body for quoted history
-  8. adapter.sendReply(originalMessage, replyText, attachments)
-  9. MessageStorage.storeReply(threadPath, replyText, message, messageDir)
-  10. Write .jiny/reply-sent.flag (signal file for cross-process detection)
-  11. Return success message
+  6. Reconstruct InboundMessage from context (content.text = empty)
+  7. Read messages/<incomingMessageDir>/received.md → extract full body
+  8. Build full reply markdown: AI reply text + formatQuotedReply(full body)
+  9. adapter.sendReply(originalMessage, fullReplyText, attachments)
+     → SmtpService: markdown→HTML, add threading headers, send via SMTP
+  10. MessageStorage.storeReply(threadPath, fullReplyText, messageDir)
+      → reply.md = exactly what was sent to the recipient
+  11. Write .jiny/reply-sent.flag (signal file for cross-process detection)
+  12. Return success message
 ```
 
 ### Per-Thread OpenCode Config (`opencode.json`)
@@ -650,7 +786,7 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 
 **Format:** Single-line JSON
 ```json
-{"sentAt":"2026-03-19T13:09:43Z","to":"user@example.com","messageId":"<123@smtp>","attachmentCount":1}
+{"sentAt":"2026-03-19T13:09:43Z","channel":"email","recipient":"user@example.com","messageId":"<123@smtp>","attachmentCount":1}
 ```
 
 **Lifecycle:**
@@ -931,16 +1067,17 @@ Configurable per pattern via `attachments` in the pattern config.
 
 ## Stripping Strategy
 
-`stripQuotedHistory()` is only applied at **AI prompt consumption time**, never at storage or reply time.
+`stripQuotedHistory()` is only applied at **AI prompt consumption time**, never at storage or reply time. Cleaning (`cleanEmailBody`) happens once at the InboundAdapter boundary — downstream consumers receive clean data.
 
-| Stage | Where | Strips? | Purpose |
-|-------|-------|---------|---------|
-| **Storage** (`.md` files) | `MessageStorage.store()` | **No** | Canonical record — full body preserved |
-| **AI Prompt Context** | `PromptBuilder.buildPromptContext()` | **Yes** | Keep AI focused on latest message |
-| **AI Prompt Body** | `PromptBuilder.buildPrompt()` | **Yes** | Incoming message body for AI |
-| **`<reply_context>`** | `serializeContext()` | **Yes** (contentPreview only) | Lean context in prompt |
-| **Outbound Reply** | `OutboundAdapter.sendReply()` | **No** | Full thread history in reply |
-| **MCP Tool Quoting** | `reply-tool.ts` | **No** | Reads `.md` file for full body |
+| Stage | Where | Strips history? | Cleans? | Purpose |
+|-------|-------|----|---------|---------|
+| **Inbound** | `InboundAdapter` | **No** | **Yes** (`cleanEmailBody`, `stripReplyPrefix`) | Clean at boundary: fix bracket nesting, normalize Re: in subject |
+| **Storage** (`.md` files) | `MessageStorage.store()` | **No** | **No** (data already clean) | Canonical record — full body preserved as-is |
+| **AI Prompt Context** | `PromptBuilder.buildPromptContext()` | **Yes** | **No** | Keep AI focused on latest message |
+| **AI Prompt Body** | `PromptBuilder.buildPrompt()` | **Yes** | **No** | Incoming message body for AI |
+| **`<reply_context>`** | `serializeContext()` | N/A | N/A | Metadata-only base64 token — no body content |
+| **Reply Tool** | `reply-tool.ts` | **No** | **No** | Reads `received.md` (already clean), builds full reply with quoted history |
+| **Outbound** | `SmtpService` | **No** | **No** | Dumb transport: markdown→HTML, add headers, send |
 
 **Code Organization:**
 - `stripQuotedHistory()` and `truncateText()` in `src/core/email-parser.ts`
@@ -975,8 +1112,8 @@ Runs automatically on first startup after upgrade (via `StateManager.ensureIniti
 
 ## Known Issues / TODO
 
-- Some models (e.g. GLM-4.7) reconstruct the `<reply_context>` JSON instead of passing it verbatim. Defensive JSON sanitization handles common corruption (smart quotes, trailing commas). Models may need multiple retry attempts before succeeding.
 - Model sometimes uses built-in tools (glob, read, task) before calling `reply_message`. System prompt instructions mitigate this but model behavior varies.
+- Reply context is base64-encoded to prevent AI from modifying it. If a model fails to pass the opaque token correctly, the reply tool will fail to decode it and return an error.
 
 ## Alerting & Health Check (v0.1.1)
 
