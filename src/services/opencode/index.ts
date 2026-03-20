@@ -1058,6 +1058,15 @@ export class OpenCodeService {
       return { name: str(input.name) };
     }
 
+    if (toolName === 'todowrite' || toolName.endsWith('_todowrite')) {
+      const todos = input.todos;
+      if (Array.isArray(todos)) {
+        const summary = todos.map((t: any) => `[${t.status}] ${str(t.content, 80)}`);
+        return { tasks: summary };
+      }
+      return { inputKeys: Object.keys(input) };
+    }
+
     // Fallback: show input keys for unknown tools
     const keys = Object.keys(input);
     if (keys.length > 0) {
