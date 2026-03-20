@@ -663,6 +663,8 @@ export class OpenCodeService {
     let lastPartType = ''; // Track what the AI is doing (e.g. "reasoning", "text", "tool")
     let lastToolName = '';
     let lastSessionStatus = '';
+    let currentModel = ''; // Model used in the current message (from message.updated)
+    let stepCount = 0;
     let rawEventCount = 0;
     let done = false;
     let sessionError: any = null;
@@ -722,6 +724,22 @@ export class OpenCodeService {
           continue;
         }
 
+        // Capture model info from message.updated events
+        // (AssistantMessage has modelID/providerID but sessionID is nested in info)
+        if (eventType === 'message.updated') {
+          const info = properties.info;
+          if (info?.sessionID === sessionId && info?.role === 'assistant') {
+            const model = info.providerID && info.modelID
+              ? `${info.providerID}/${info.modelID}`
+              : info.modelID || '';
+            if (model && model !== currentModel) {
+              currentModel = model;
+            }
+            lastActivityTime = Date.now();
+          }
+          continue;
+        }
+
         // Filter events: only process events that positively match our session.
         // Events without a sessionID (global events like file.watcher.updated)
         // must be skipped — otherwise they reset the activity timer without contributing parts.
@@ -738,6 +756,15 @@ export class OpenCodeService {
 
             // Track what the AI is doing for progress logging
             lastPartType = part.type || '';
+
+            // Log model on each new step
+            if (part.type === 'step-start') {
+              stepCount++;
+              logger.info('AI step started', {
+                step: stepCount,
+                model: currentModel || '(unknown)',
+              });
+            }
 
             // Accumulate parts (deduplicate by ID — parts may be updated multiple times)
             const existingIdx = accumulatedParts.findIndex((p: any) => p.id === part.id);
@@ -794,6 +821,17 @@ export class OpenCodeService {
             } else {
               // Clear tool name when AI moves on to non-tool parts
               lastToolName = '';
+            }
+
+            // Log step completion with cost/token info
+            if (part.type === 'step-finish') {
+              logger.debug('AI step finished', {
+                step: stepCount,
+                model: currentModel || '(unknown)',
+                reason: part.reason,
+                cost: part.cost,
+                tokens: part.tokens,
+              });
             }
 
             // Log text deltas at debug level (too noisy for info)
