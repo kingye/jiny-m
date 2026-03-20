@@ -61,7 +61,7 @@ server.tool(
   'Send a reply message back through the originating channel. Handles quoting, threading, and reply storage. Attachments must be files within the thread directory (excluding .opencode and .jiny directories).',
   {
     message: z.string().describe('The reply text to send'),
-    context: z.union([z.string(), z.record(z.string(), z.any())]).describe('The reply context JSON from the <reply_context> block in the user message'),
+    context: z.union([z.record(z.string(), z.any()), z.string()]).describe('The reply context from the <reply_context> block in the user message. Can be passed as JSON object or string.'),
     attachments: z.array(z.string()).optional().describe('Optional list of filenames within the thread directory to attach'),
   },
   async ({ message, context: contextRaw, attachments: attachmentFilenames }) => {
