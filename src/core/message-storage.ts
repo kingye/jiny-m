@@ -35,13 +35,13 @@ const turndownService = new TurndownService({
 });
 
 /**
- * Format a date as YYYY-MM-DD_HH-mm-ss for use in directory/file names.
+ * Format a date as YYYY-MM-DD_HH-mm-ss in UTC for use in directory/file names.
  * This is the SINGLE SOURCE OF TRUTH for message directory naming.
- * Uses local time to match user expectations in the filesystem.
+ * Uses UTC to ensure consistency across timezone/DST changes.
  */
 export function formatDateForFilename(date: Date): string {
   const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}_${pad(date.getUTCHours())}-${pad(date.getUTCMinutes())}-${pad(date.getUTCSeconds())}`;
 }
 
 /**
