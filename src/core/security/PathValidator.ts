@@ -1,7 +1,9 @@
 import { normalize, join, basename } from 'node:path';
 
 const MAX_FILENAME_LENGTH = 255;
-const SAFE_FILENAME_PATTERN = /^[\w\-. ]+$/;
+// Allow Unicode letters/digits (CJK, etc.) while blocking dangerous characters:
+// path separators (/ \), null bytes, control chars, and shell metacharacters
+const DANGEROUS_FILENAME_PATTERN = /[\/\\:\*\?"<>\|\x00-\x1f\x7f]/;
 
 export class SecurityError extends Error {
   constructor(message: string) {
@@ -24,7 +26,7 @@ export class PathValidator {
       throw new SecurityError(`Filename exceeds maximum length of ${MAX_FILENAME_LENGTH}`);
     }
 
-    if (!SAFE_FILENAME_PATTERN.test(filename)) {
+    if (DANGEROUS_FILENAME_PATTERN.test(filename)) {
       throw new SecurityError('Filename contains invalid characters');
     }
 

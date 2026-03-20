@@ -200,10 +200,21 @@ describe('Command Handler System', () => {
       }).toThrow(SecurityError);
     });
 
-    test('should reject files with invalid characters', () => {
+    test('should reject files with dangerous characters', () => {
       expect(() => {
-        PathValidator.validateFilePath(tempDir, 'test@#$%.pdf');
+        PathValidator.validateFilePath(tempDir, 'test<script>.pdf');
       }).toThrow(SecurityError);
+      expect(() => {
+        PathValidator.validateFilePath(tempDir, 'test|pipe.pdf');
+      }).toThrow(SecurityError);
+      expect(() => {
+        PathValidator.validateFilePath(tempDir, 'test\x00null.pdf');
+      }).toThrow(SecurityError);
+    });
+
+    test('should accept filenames with Unicode characters', () => {
+      const path = PathValidator.validateFilePath(tempDir, '飞书钉钉API方案总结.pptx');
+      expect(path).toContain('飞书钉钉API方案总结.pptx');
     });
 
     test('should reject filenames exceeding max length', () => {

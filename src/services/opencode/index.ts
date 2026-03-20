@@ -256,6 +256,8 @@ export class OpenCodeService {
     // Model config is in per-thread opencode.json (not passed per-prompt).
     // Use SSE streaming (promptAsync + event subscription) for progress visibility
     // and activity-based timeout. Falls back to blocking prompt() if SSE fails.
+    // Clean up any stale signal file from a previous run before starting.
+    await this.cleanupStaleSignalFile(threadPath);
     const { parts: resultParts, replySentByTool } = await this.promptWithProgress(
       session,
       threadPath,
@@ -489,6 +491,10 @@ export class OpenCodeService {
         });
         done = true;
         sessionError = new Error(`No activity from OpenCode for ${Math.round(ACTIVITY_TIMEOUT / 1000)} seconds`);
+        // Force-close the SSE stream so the for-await loop unblocks immediately
+        if (sseStream) {
+          try { sseStream.return(undefined); } catch { /* ignore */ }
+        }
       }
     }, 5000);
 
@@ -843,6 +849,21 @@ export class OpenCodeService {
     }
 
     return false;
+  }
+
+  /**
+   * Clean up any stale signal file from a previous run.
+   * Must be called before starting a new prompt to avoid detecting leftover files.
+   */
+  private async cleanupStaleSignalFile(threadPath: string): Promise<void> {
+    const signalFile = join(threadPath, '.jiny', 'reply-sent.flag');
+    try {
+      await access(signalFile);
+      await unlink(signalFile);
+      logger.info('Cleaned up stale signal file from previous run', { signalFile });
+    } catch {
+      // No stale file — expected case
+    }
   }
 
   /**
