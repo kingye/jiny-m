@@ -150,6 +150,17 @@ export interface OutboundAdapter {
     replyText: string,
     attachments?: Array<{ filename: string; path: string; contentType: string }>,
   ): Promise<{ messageId: string }>;
+
+  /**
+   * Send a fresh (non-reply) alert/notification through this channel.
+   * Optional — not all channels may support this.
+   * Returns the external message ID of the sent message.
+   */
+  sendAlert?(
+    recipient: string,
+    subject: string,
+    body: string,
+  ): Promise<{ messageId: string }>;
 }
 
 // ============================================================================

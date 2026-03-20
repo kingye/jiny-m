@@ -1,13 +1,22 @@
+import { EventEmitter } from 'node:events';
 import { LOG_LEVELS } from '../utils/constants';
 
 export type LogLevel = keyof typeof LOG_LEVELS;
 
-export class Logger {
+export interface LogEvent {
+  level: LogLevel;
+  message: string;
+  meta?: any;
+  timestamp: string;
+}
+
+export class Logger extends EventEmitter {
   private level: keyof typeof LOG_LEVELS;
   private levelOrder: Record<LogLevel, number>;
   private silent: boolean;
   
   constructor(level: LogLevel = 'INFO', silent: boolean = false) {
+    super();
     this.level = level;
     this.silent = silent;
     this.levelOrder = {
@@ -57,26 +66,43 @@ export class Logger {
 
     return `${prefix} ${message}`;
   }
+
+  /** Emit a log event for subscribers (e.g. AlertService). */
+  private emitLogEvent(level: LogLevel, message: string, meta?: any): void {
+    if (this.listenerCount('log') > 0) {
+      const event: LogEvent = {
+        level,
+        message,
+        meta,
+        timestamp: new Date().toISOString(),
+      };
+      this.emit('log', event);
+    }
+  }
   
   error(message: string, meta?: any): void {
+    this.emitLogEvent('ERROR', message, meta);
     if (this.shouldLog('ERROR')) {
       console.error(this.formatMessage('ERROR', message, meta));
     }
   }
   
   warn(message: string, meta?: any): void {
+    this.emitLogEvent('WARN', message, meta);
     if (this.shouldLog('WARN')) {
       console.warn(this.formatMessage('WARN', message, meta));
     }
   }
   
   info(message: string, meta?: any): void {
+    this.emitLogEvent('INFO', message, meta);
     if (this.shouldLog('INFO')) {
       console.log(this.formatMessage('INFO', message, meta));
     }
   }
   
   debug(message: string, meta?: any): void {
+    this.emitLogEvent('DEBUG', message, meta);
     if (this.shouldLog('DEBUG')) {
       console.log(this.formatMessage('DEBUG', message, meta));
     }

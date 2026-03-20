@@ -33,6 +33,14 @@ export interface ReplyOptions {
   }>;
 }
 
+/** Options for sending a fresh (non-reply) email. */
+export interface MailOptions {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+}
+
 export class SmtpService {
   private config: SmtpConfig;
   private transporter?: ReturnType<typeof nodemailer.createTransport>;
@@ -104,6 +112,34 @@ export class SmtpService {
     });
   }
 
+  /**
+   * Send a fresh (non-reply) email — no Re: prefix, no threading headers.
+   * Used for alerts, notifications, and other outbound emails.
+   */
+  sendMail(options: MailOptions): Promise<string> {
+    return this.sendMailInternal(options).catch(async (err) => {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const isConnectionError = errorMessage.toLowerCase().includes('connection') ||
+                                errorMessage.toLowerCase().includes('econn') ||
+                                errorMessage.toLowerCase().includes('timeout');
+
+      if (!isConnectionError) {
+        throw err;
+      }
+
+      logger.warn('Connection error sending mail, attempting reconnect and retry...', { error: errorMessage });
+
+      try {
+        await this.reconnect();
+        return await this.sendMailInternal(options);
+      } catch (retryError) {
+        const retryErrorMessage = retryError instanceof Error ? retryError.message : 'Unknown error';
+        logger.error('Failed to send mail after reconnect', { error: retryErrorMessage });
+        throw new Error(`Failed to send mail after reconnect: ${retryErrorMessage}`);
+      }
+    });
+  }
+
   private sendReplyInternal(options: ReplyOptions): Promise<string> {
     if (!this.transporter) {
       throw new Error('SMTP transporter not connected. Call connect() first.');
@@ -162,6 +198,46 @@ export class SmtpService {
           response: info.response,
         });
         resolve(replyMessageId);
+      });
+    });
+  }
+
+  private sendMailInternal(options: MailOptions): Promise<string> {
+    if (!this.transporter) {
+      throw new Error('SMTP transporter not connected. Call connect() first.');
+    }
+
+    const messageId = `<${Date.now()}.alert@${this.config.host.split(':')[0]}>`;
+
+    const mailOptions: any = {
+      from: this.config.username,
+      to: options.to,
+      subject: options.subject,
+      text: options.text,
+      html: options.html || this.markdownToHtml(options.text),
+      messageId,
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      if (!this.transporter) {
+        reject(new Error('SMTP transporter not connected'));
+        return;
+      }
+
+      this.transporter.sendMail(mailOptions, (err: Error | null, info: nodemailer.SentMessageInfo) => {
+        if (err) {
+          logger.error('Failed to send mail', { error: err.message, to: options.to });
+          reject(new Error(`Failed to send mail: ${err.message}`));
+          return;
+        }
+
+        logger.info('Mail sent successfully', {
+          to: options.to,
+          subject: options.subject,
+          messageId,
+          response: info.response,
+        });
+        resolve(messageId);
       });
     });
   }

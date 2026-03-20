@@ -1,4 +1,4 @@
-import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig, ChannelPattern } from '../types';
+import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig, ChannelPattern, AlertingConfig, HealthCheckConfig } from '../types';
 import { validateRegex, extractDomain, parseFileSize } from '../utils/helpers';
 
 export class ConfigValidationError extends Error {
@@ -314,6 +314,98 @@ export function validateReplyConfig(config: any): ReplyConfig {
   };
 }
 
+export function validateAlertingConfig(config: any): AlertingConfig | undefined {
+  if (!config) return undefined;
+
+  if (typeof config !== 'object' || config === null) {
+    throw new ConfigValidationError('alerting config must be an object');
+  }
+
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new ConfigValidationError('alerting.enabled must be a boolean');
+  }
+
+  // If not enabled, return minimal config without requiring other fields
+  if (config.enabled === false) {
+    return { enabled: false, recipient: '' };
+  }
+
+  if (!config.recipient || typeof config.recipient !== 'string') {
+    throw new ConfigValidationError('alerting.recipient is required and must be a string (email address)');
+  }
+
+  if (config.batchIntervalMinutes !== undefined) {
+    if (typeof config.batchIntervalMinutes !== 'number' || config.batchIntervalMinutes < 1) {
+      throw new ConfigValidationError('alerting.batchIntervalMinutes must be a positive number');
+    }
+  }
+
+  if (config.maxErrorsPerBatch !== undefined) {
+    if (typeof config.maxErrorsPerBatch !== 'number' || config.maxErrorsPerBatch < 1) {
+      throw new ConfigValidationError('alerting.maxErrorsPerBatch must be a positive number');
+    }
+  }
+
+  if (config.subjectPrefix !== undefined && typeof config.subjectPrefix !== 'string') {
+    throw new ConfigValidationError('alerting.subjectPrefix must be a string');
+  }
+
+  if (config.includeReplyToolLog !== undefined && typeof config.includeReplyToolLog !== 'boolean') {
+    throw new ConfigValidationError('alerting.includeReplyToolLog must be a boolean');
+  }
+
+  if (config.replyToolLogTailLines !== undefined) {
+    if (typeof config.replyToolLogTailLines !== 'number' || config.replyToolLogTailLines < 1) {
+      throw new ConfigValidationError('alerting.replyToolLogTailLines must be a positive number');
+    }
+  }
+
+  // Health check sub-config
+  let healthCheck: HealthCheckConfig | undefined;
+  if (config.healthCheck) {
+    healthCheck = validateHealthCheckConfig(config.healthCheck);
+  }
+
+  return {
+    enabled: config.enabled ?? true,
+    recipient: config.recipient,
+    batchIntervalMinutes: config.batchIntervalMinutes ?? 5,
+    maxErrorsPerBatch: config.maxErrorsPerBatch ?? 50,
+    subjectPrefix: config.subjectPrefix ?? 'Jiny-M Alert',
+    includeReplyToolLog: config.includeReplyToolLog ?? true,
+    replyToolLogTailLines: config.replyToolLogTailLines ?? 50,
+    healthCheck,
+  };
+}
+
+function validateHealthCheckConfig(config: any): HealthCheckConfig | undefined {
+  if (!config) return undefined;
+
+  if (typeof config !== 'object' || config === null) {
+    throw new ConfigValidationError('alerting.healthCheck must be an object');
+  }
+
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new ConfigValidationError('alerting.healthCheck.enabled must be a boolean');
+  }
+
+  if (config.intervalHours !== undefined) {
+    if (typeof config.intervalHours !== 'number' || config.intervalHours < 0.1) {
+      throw new ConfigValidationError('alerting.healthCheck.intervalHours must be a positive number (minimum 0.1)');
+    }
+  }
+
+  if (config.recipient !== undefined && typeof config.recipient !== 'string') {
+    throw new ConfigValidationError('alerting.healthCheck.recipient must be a string');
+  }
+
+  return {
+    enabled: config.enabled ?? true,
+    intervalHours: config.intervalHours ?? 24,
+    recipient: config.recipient,
+  };
+}
+
 export function validateConfig(config: any): Config {
   if (!config) {
     throw new ConfigValidationError('Configuration is required');
@@ -382,6 +474,12 @@ export function validateConfig(config: any): Config {
       maxConcurrentThreads: config.worker.maxConcurrentThreads ?? 3,
       maxQueueSizePerThread: config.worker.maxQueueSizePerThread ?? 10,
     };
+  }
+
+  // Alerting config
+  const alertingConfig = validateAlertingConfig(config.alerting);
+  if (alertingConfig) {
+    result.alerting = alertingConfig;
   }
 
   return result;
