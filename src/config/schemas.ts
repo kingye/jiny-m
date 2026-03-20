@@ -259,6 +259,9 @@ export function validateOpenCodeConfig(config: any): OpenCodeConfig | undefined 
   if (config.model !== undefined && typeof config.model !== 'string') {
     throw new ConfigValidationError('OpenCode model must be a string');
   }
+  if (config.smallModel !== undefined && typeof config.smallModel !== 'string') {
+    throw new ConfigValidationError('OpenCode smallModel must be a string');
+  }
   if (config.systemPrompt !== undefined && typeof config.systemPrompt !== 'string') {
     throw new ConfigValidationError('OpenCode systemPrompt must be a string');
   }
@@ -274,6 +277,7 @@ export function validateOpenCodeConfig(config: any): OpenCodeConfig | undefined 
     hostname: config.hostname,
     provider: config.provider,
     model: config.model,
+    smallModel: config.smallModel,
     systemPrompt: config.systemPrompt,
     includeThreadHistory: config.includeThreadHistory ?? true,
     contextSecret: config.contextSecret,

@@ -87,13 +87,19 @@ export class OpenCodeService {
     const configPath = join(threadPath, 'opencode.json');
     const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
 
-    // Check if config already exists with correct tool path
+    // Build expected model strings in "provider/model" format for opencode.json
+    const expectedModel = this.getModelString();
+    const expectedSmallModel = this.getSmallModelString();
+
+    // Check if config already exists and is up to date
     try {
       const existing = Bun.file(configPath);
       if (await existing.exists()) {
         const content = await existing.json();
         if (content?.mcp?.['jiny_reply']?.command?.[2] === toolPath &&
-            content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd()) {
+            content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd() &&
+            (content?.model ?? undefined) === expectedModel &&
+            (content?.small_model ?? undefined) === expectedSmallModel) {
           return false; // Config already up to date
         }
       }
@@ -101,25 +107,36 @@ export class OpenCodeService {
       // File doesn't exist or is invalid, will be created below
     }
 
-    const opencodeConfig = {
+    const opencodeConfig: Record<string, any> = {
       $schema: 'https://opencode.ai/config.json',
-      permission: {
-        '*': 'allow',
-      },
-      mcp: {
-        'jiny_reply': {
-          type: 'local',
-          command: ['bun', 'run', toolPath],
-          environment: { JINY_ROOT: process.cwd() },
-          enabled: true,
-          timeout: 60000,
-        },
+    };
+
+    // Only write model fields if configured
+    if (expectedModel) {
+      opencodeConfig.model = expectedModel;
+    }
+    if (expectedSmallModel) {
+      opencodeConfig.small_model = expectedSmallModel;
+    }
+
+    opencodeConfig.permission = { '*': 'allow' };
+    opencodeConfig.mcp = {
+      'jiny_reply': {
+        type: 'local',
+        command: ['bun', 'run', toolPath],
+        environment: { JINY_ROOT: process.cwd() },
+        enabled: true,
+        timeout: 60000,
       },
     };
 
     try {
       await Bun.write(configPath, JSON.stringify(opencodeConfig, null, 2));
-      logger.info('OpenCode config written with MCP reply tool', { configPath, toolPath });
+      logger.info('OpenCode config written', {
+        configPath,
+        model: expectedModel || '(default)',
+        smallModel: expectedSmallModel || '(default)',
+      });
       return true; // Freshly written
     } catch (error) {
       logger.warn('Failed to write opencode.json', {
@@ -128,6 +145,27 @@ export class OpenCodeService {
       });
       return false;
     }
+  }
+
+  /**
+   * Build the model string in "provider/model" format for opencode.json.
+   * Returns undefined if no model is configured (OpenCode uses its global default).
+   */
+  private getModelString(): string | undefined {
+    if (!this.config.provider && !this.config.model) return undefined;
+    if (this.config.provider && this.config.model) {
+      return `${this.config.provider}/${this.config.model}`;
+    }
+    if (this.config.model) return this.config.model;
+    return undefined;
+  }
+
+  /**
+   * Build the small model string for opencode.json.
+   * Accepts "provider/model" format directly.
+   */
+  private getSmallModelString(): string | undefined {
+    return this.config.smallModel || undefined;
   }
 
   private async findFreePort(): Promise<number> {
@@ -223,16 +261,13 @@ export class OpenCodeService {
         : prompt,
     });
 
-    const modelConfig = this.getModelConfig();
-    logger.debug('Using model config', { modelConfig });
-
+    // Model config is in per-thread opencode.json (not passed per-prompt).
     // Use SSE streaming (promptAsync + event subscription) for progress visibility
     // and activity-based timeout. Falls back to blocking prompt() if SSE fails.
     const { parts: resultParts, replySentByTool } = await this.promptWithProgress(
       session,
       threadPath,
       systemPrompt,
-      modelConfig,
       prompt,
     );
 
@@ -584,7 +619,6 @@ export class OpenCodeService {
     session: ThreadSession,
     threadPath: string,
     systemPrompt: string,
-    modelConfig: { providerID: string; modelID: string } | undefined,
     prompt: string,
   ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
     if (!this.client) throw new Error('OpenCode client not initialized');
@@ -605,7 +639,7 @@ export class OpenCodeService {
       logger.warn('SSE subscription failed, falling back to blocking prompt()', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      return this.promptBlocking(session, threadPath, systemPrompt, modelConfig, prompt);
+      return this.promptBlocking(session, threadPath, systemPrompt, prompt);
     }
 
     // Fire the prompt asynchronously (returns immediately with HTTP 204)
@@ -615,7 +649,6 @@ export class OpenCodeService {
         query: { directory: threadPath },
         body: {
           system: systemPrompt,
-          model: modelConfig,
           parts: [{ type: 'text', text: prompt }],
         },
       });
@@ -850,7 +883,7 @@ export class OpenCodeService {
     if (sessionError?.name === 'ContextOverflowError') {
       logger.warn('Retrying with new session after ContextOverflowError');
       const newSession = await this.createNewSession(threadPath);
-      return this.promptBlocking(newSession, threadPath, systemPrompt, modelConfig, prompt);
+      return this.promptBlocking(newSession, threadPath, systemPrompt, prompt);
     }
 
     // Handle activity timeout
@@ -878,7 +911,6 @@ export class OpenCodeService {
     session: ThreadSession,
     threadPath: string,
     systemPrompt: string,
-    modelConfig: { providerID: string; modelID: string } | undefined,
     prompt: string,
   ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
     if (!this.client) throw new Error('OpenCode client not initialized');
@@ -893,7 +925,6 @@ export class OpenCodeService {
           query: { directory: threadPath },
           body: {
             system: systemPrompt,
-            model: modelConfig,
             parts: [{ type: 'text', text: prompt }],
           },
         }),
@@ -1018,34 +1049,6 @@ export class OpenCodeService {
     }
   }
 
-  private getModelConfig(): { providerID: string; modelID: string } | undefined {
-    if (!this.config.provider && !this.config.model) {
-      return undefined;
-    }
-
-    if (this.config.provider && this.config.model) {
-      return { providerID: this.config.provider, modelID: this.config.model };
-    }
-
-    if (this.config.model) {
-      const slashIndex = this.config.model.indexOf('/');
-      if (slashIndex > 0 && slashIndex < this.config.model.length - 1) {
-        return {
-          providerID: this.config.model.substring(0, slashIndex),
-          modelID: this.config.model.substring(slashIndex + 1),
-        };
-      }
-      logger.warn('Model specified without provider, using OpenCode default provider');
-      return { providerID: '', modelID: this.config.model };
-    }
-
-    if (this.config.provider) {
-      logger.warn('Provider specified without model, using OpenCode default model');
-      return { providerID: this.config.provider, modelID: '' };
-    }
-
-    return undefined;
-  }
 }
 
 function trimEmailReplyContent(fileName: string, content: string): string {

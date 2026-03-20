@@ -75,6 +75,7 @@ export interface OpenCodeConfig {
   hostname?: string;
   provider?: string;
   model?: string;
+  smallModel?: string;
   systemPrompt?: string;
   includeThreadHistory?: boolean;
   contextSecret?: string;
