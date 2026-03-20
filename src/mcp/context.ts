@@ -11,7 +11,6 @@
  */
 
 import type { InboundMessage, ChannelType } from '../channels/types';
-import { stripQuotedHistory, truncateText } from '../core/email-parser';
 
 /**
  * Channel-agnostic reply context.
@@ -60,20 +59,6 @@ export function serializeContext(
   threadName: string,
   incomingMessageDir?: string,
 ): string {
-  const MAX_BODY_IN_CONTEXT = 500;
-
-  // Build content preview (stripped + truncated) for AI display
-  let contentPreview = message.content.text || message.content.markdown;
-  if (contentPreview) {
-    contentPreview = stripQuotedHistory(contentPreview);
-    if (contentPreview.length > MAX_BODY_IN_CONTEXT) {
-      contentPreview = truncateText(contentPreview, MAX_BODY_IN_CONTEXT);
-    }
-  }
-  if (!contentPreview && message.content.html) {
-    contentPreview = truncateText(message.content.html, MAX_BODY_IN_CONTEXT);
-  }
-
   // Determine recipient (who to reply to)
   // For email: use reply-to header if present, otherwise sender address
   const recipient = message.metadata?.headers?.['reply-to'] || message.senderAddress || message.sender;
@@ -85,21 +70,16 @@ export function serializeContext(
     recipient,
     topic: message.topic,
     timestamp: message.timestamp.toISOString(),
-    contentPreview,
+    // contentPreview omitted — AI already sees the message body in the prompt
     incomingMessageDir,
     externalId: message.externalId,
     threadRefs: message.threadRefs,
     uid: message.channelUid,
+    // Minimal channelMetadata — only fields not already top-level
     channelMetadata: {
-      // Preserve channel-specific data needed for reply construction
-      ...message.metadata,
-      // Ensure key email fields are always present for email channel
       ...(message.channel === 'email' ? {
-        messageId: message.externalId,
-        references: message.threadRefs,
         inReplyTo: message.replyToId,
         from: message.metadata?.from || message.senderAddress,
-        fromName: message.sender,
       } : {}),
     },
   };
@@ -188,10 +168,84 @@ function sanitizeContextJson(json: string): string {
     .replace(/\u00AB/g, '\\"')  // « left-pointing double angle
     .replace(/\u00BB/g, '\\"'); // » right-pointing double angle
 
+  // Remove trailing commas
   try {
     sanitized = sanitized.replace(/,\s*([}\]])/g, '$1');
-    return sanitized;
-  } catch {
-    return sanitized;
+  } catch { /* ignore */ }
+
+  // Repair truncated JSON — if the AI cut off the context string mid-way,
+  // try to close open strings, arrays, and objects so JSON.parse succeeds.
+  // Only attempt this if the JSON doesn't already end with }
+  if (!sanitized.trimEnd().endsWith('}')) {
+    sanitized = repairTruncatedJson(sanitized);
   }
+
+  return sanitized;
+}
+
+/**
+ * Attempt to repair truncated JSON by closing open structures.
+ * Tracks open braces/brackets/quotes and appends closing characters.
+ */
+function repairTruncatedJson(json: string): string {
+  let repaired = json;
+
+  // If we're inside an unclosed string, close it
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < repaired.length; i++) {
+    const ch = repaired[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+    }
+  }
+  if (inString) {
+    repaired += '"';
+  }
+
+  // Remove any trailing partial key-value (e.g. ,"someKey": or ,"someKey":"partial)
+  // by stripping back to the last complete value
+  repaired = repaired.replace(/,\s*"[^"]*"\s*:?\s*"?[^"]*$/, '');
+  repaired = repaired.replace(/,\s*"[^"]*"\s*$/, '');
+  repaired = repaired.replace(/,\s*$/, '');
+
+  // Count open braces and brackets, close them
+  let openBraces = 0;
+  let openBrackets = 0;
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < repaired.length; i++) {
+    const ch = repaired[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+
+  // Close open structures
+  for (let i = 0; i < openBrackets; i++) repaired += ']';
+  for (let i = 0; i < openBraces; i++) repaired += '}';
+
+  return repaired;
 }
