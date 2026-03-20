@@ -28,6 +28,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # workspace (email storage)
 workspace/
 
+# opencode runtime data
+.opencode/
+
 # caches
 .eslintcache
 .cache
@@ -38,3 +41,11 @@ workspace/
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# temp/debug files
+fix-state.ts
+debug-uids.ts
+create-presentation.js
+*.pptx
+*.bak
+target/
