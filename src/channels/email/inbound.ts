@@ -191,7 +191,7 @@ export class EmailInboundAdapter implements InboundAdapter {
       sender,
       senderAddress,
       recipients: email.to || [],
-      topic: email.subject || '(no subject)',
+      topic: stripReplyPrefix(email.subject || '(no subject)'),
       content: {
         text: email.body.text,
         html: email.body.html,

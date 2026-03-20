@@ -11,7 +11,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import type { InboundMessage } from '../../channels/types';
 import type { OpenCodeConfig } from '../../types';
 import { logger } from '../../core/logger';
-import { stripReplyPrefix as stripReplyPrefixes } from '../../utils/helpers';
 import { stripQuotedHistory, truncateText } from '../../core/email-parser';
 import { serializeContext } from '../../mcp/context';
 
@@ -77,7 +76,7 @@ export class PromptBuilder {
       bodyText = truncateText(bodyText, MAX_BODY_IN_PROMPT);
     }
 
-    const cleanTopic = stripReplyPrefixes(message.topic);
+    const cleanTopic = message.topic;
 
     parts.push('## Incoming Message');
     parts.push(`**From:** ${message.sender} <${message.senderAddress}>`);

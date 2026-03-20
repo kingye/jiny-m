@@ -3,7 +3,6 @@ import type { SmtpConfig, Email } from '../../types';
 import { logger } from '../../core/logger';
 import { marked } from 'marked';
 import TurndownService from 'turndown';
-import { stripReplyPrefix } from '../../utils/helpers';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -147,8 +146,7 @@ export class SmtpService {
     }
 
     const toAddress = options.to;
-    const cleanSubject = stripReplyPrefix(options.subject);
-    const replySubject = `Re: ${cleanSubject}`;
+    const replySubject = `Re: ${options.subject}`;
 
     const replyMessageId = `<${Date.now()}.reply@${this.config.host.split(':')[0]}>`;
 
@@ -287,8 +285,8 @@ export class SmtpService {
     fromName = fromName.replace(/\s*\[.*$/, '').trim();
     if (!fromName) fromName = email.from || 'Unknown';
 
-    // Clean subject — strip redundant Re:/回复: prefixes
-    const cleanSubject = stripReplyPrefix(email.subject);
+    // Subject is already cleaned at ingest time (no redundant Re:/回复: prefixes)
+    const cleanSubject = email.subject;
 
     // Quote only the NEW content from the sender's message (strip previous quoted history).
     // This prevents exponential nesting of quoted blocks and email address repetition.
