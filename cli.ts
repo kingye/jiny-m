@@ -13,6 +13,10 @@ import { monitorCommand } from './src/cli/commands/monitor';
 import { initConfigCommand, validateConfigCommand } from './src/cli/commands/config';
 import { listPatternsCommand, addPatternCommand } from './src/cli/commands/patterns';
 
+// Read version from package.json so it stays in sync
+const pkg = await Bun.file(join(import.meta.dir, 'package.json')).json();
+const VERSION: string = pkg.version;
+
 // Parse --workdir early (before commander), since it must take effect before any other code runs.
 // This changes process.cwd() so all path resolution throughout the app is relative to the workdir.
 const workdirIndex = process.argv.indexOf('--workdir');
@@ -37,7 +41,7 @@ await mkdir(jinyDir, { recursive: true });
 program
   .name('jiny-m')
   .description('Jiny-M: AI Agent - Monitor messages and respond with AI')
-  .version('0.1.0')
+  .version(VERSION)
   .option('-w, --workdir <path>', 'Working directory (where .jiny/config.json lives). Parsed early, before subcommands.');
 
 program
