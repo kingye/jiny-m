@@ -36,8 +36,10 @@ const turndownService = new TurndownService({
 
 /**
  * Format a date as YYYY-MM-DD_HH-mm-ss for use in directory/file names.
+ * This is the SINGLE SOURCE OF TRUTH for message directory naming.
+ * Uses local time to match user expectations in the filesystem.
  */
-function formatDateForFilename(date: Date): string {
+export function formatDateForFilename(date: Date): string {
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
 }
@@ -299,6 +301,17 @@ export class MessageStorage {
 
     if (messageDir) {
       replyDirPath = join(threadPath, 'messages', messageDir);
+      // Verify the directory and received.md exist — if not, the messageDir may be
+      // from a different format/timezone. Log a warning but still create it.
+      const receivedPath = join(replyDirPath, 'received.md');
+      try {
+        await access(receivedPath);
+      } catch {
+        logger.warn('storeReply: received.md not found in messageDir, reply may be orphaned', {
+          messageDir,
+          expected: receivedPath,
+        });
+      }
       await mkdir(replyDirPath, { recursive: true });
     } else {
       const messagesDir = join(threadPath, 'messages');

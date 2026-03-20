@@ -267,7 +267,16 @@ export class SmtpService {
   private quoteOriginalEmail(email: Email): string {
     const lines: string[] = [];
 
-    const timeStr = email.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Format time — handle Invalid Date gracefully
+    let timeStr: string;
+    try {
+      const d = email.date;
+      timeStr = (d instanceof Date && !isNaN(d.getTime()))
+        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
 
     // Extract clean display name from the "from" field.
     // Handle formats like: "Name" <addr>, Name <addr>, addr, or nested brackets
@@ -282,12 +291,6 @@ export class SmtpService {
     // Clean subject — strip redundant Re:/回复: prefixes
     const cleanSubject = stripReplyPrefix(email.subject);
 
-    // Chat-style quoted message header
-    lines.push('---');
-    lines.push(`### ${fromName} (${timeStr})`);
-    lines.push('> ' + cleanSubject);
-    lines.push('');
-
     // Quote only the NEW content from the sender's message (strip previous quoted history).
     // This prevents exponential nesting of quoted blocks and email address repetition.
     let bodyText: string | undefined;
@@ -297,14 +300,23 @@ export class SmtpService {
       bodyText = turndownService.turndown(email.body.html);
     }
 
-    if (bodyText) {
-      const freshContent = stripQuotedHistory(bodyText);
-      const quotedBody = freshContent
-        .split('\n')
-        .map((line: string) => `> ${line}`)
-        .join('\n');
-      lines.push(quotedBody);
+    // Only include quoted block if there's actual content
+    const freshContent = bodyText ? stripQuotedHistory(bodyText).trim() : '';
+    if (!freshContent) {
+      return ''; // No body to quote — skip quoted block entirely
     }
+
+    // Chat-style quoted message header
+    lines.push('---');
+    lines.push(`### ${fromName} (${timeStr})`);
+    lines.push('> ' + cleanSubject);
+    lines.push('');
+
+    const quotedBody = freshContent
+      .split('\n')
+      .map((line: string) => `> ${line}`)
+      .join('\n');
+    lines.push(quotedBody);
 
     return lines.join('\n');
   }
