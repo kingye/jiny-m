@@ -4,7 +4,6 @@ import { logger } from '../../core/logger';
 import { marked } from 'marked';
 import TurndownService from 'turndown';
 import { stripReplyPrefix } from '../../utils/helpers';
-import { stripQuotedHistory } from '../../core/email-parser';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -301,8 +300,8 @@ export class SmtpService {
     }
 
     // Only include quoted block if there's actual content
-    const freshContent = bodyText ? stripQuotedHistory(bodyText).trim() : '';
-    if (!freshContent) {
+    const bodyContent = bodyText?.trim() || '';
+    if (!bodyContent) {
       return ''; // No body to quote — skip quoted block entirely
     }
 
@@ -312,7 +311,7 @@ export class SmtpService {
     lines.push('> ' + cleanSubject);
     lines.push('');
 
-    const quotedBody = freshContent
+    const quotedBody = bodyContent
       .split('\n')
       .map((line: string) => `> ${line}`)
       .join('\n');
