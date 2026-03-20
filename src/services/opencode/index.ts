@@ -584,6 +584,7 @@ export class OpenCodeService {
               lastToolName = part.tool;
               const toolStatus = part.state?.status || 'unknown';
               const prevStatus = toolLoggedStatus.get(part.id);
+              const isReplyTool = part.tool.includes('reply_email') || part.tool.includes('reply_message');
 
               if (prevStatus !== toolStatus) {
                 toolLoggedStatus.set(part.id, toolStatus);
@@ -597,8 +598,8 @@ export class OpenCodeService {
                   }
                 }
 
-                // Log tool input when reply_email is first called (pending state has the AI's arguments)
-                if (part.tool.includes('reply_email') && toolStatus === 'pending' && part.state?.input) {
+                // Log tool input when reply tool is first called (pending state has the AI's arguments)
+                if (isReplyTool && toolStatus === 'pending' && part.state?.input) {
                   const input = part.state.input;
                   const contextStr = typeof input.context === 'string' ? input.context : JSON.stringify(input.context);
                   logger.debug('reply_email tool input from AI', {
@@ -611,22 +612,26 @@ export class OpenCodeService {
                 }
               }
 
-              // Detect reply_email tool usage in real-time
-              if (part.tool.includes('reply_email')) {
+              // Detect reply tool usage in real-time (reply_email or reply_message)
+              if (isReplyTool) {
                 if (toolStatus === 'completed') {
                   // Check output for error indicators — OpenCode reports "completed"
                   // even when the MCP tool returns isError: true
                   const output = (part.state?.output || '').toString();
                   if (output.toLowerCase().startsWith('error')) {
-                    logger.warn('reply_email tool completed with error output', {
-                      output: output.substring(0, 200),
+                    logger.warn('Reply tool completed with error output', {
+                      tool: part.tool,
+                      output: output.substring(0, 300),
                     });
                   } else {
                     replySentByTool = true;
-                    logger.info('reply_email MCP tool completed successfully (detected via SSE)');
+                    logger.info('Reply MCP tool completed successfully (detected via SSE)', {
+                      tool: part.tool,
+                    });
                   }
                 } else if (toolStatus === 'error') {
-                  logger.warn('reply_email tool call failed', {
+                  logger.warn('Reply tool call failed', {
+                    tool: part.tool,
                     error: part.state?.error,
                   });
                 }
@@ -827,9 +832,9 @@ export class OpenCodeService {
         partStatus = part.status.toLowerCase();
       }
 
-      // Match any part that references reply_email
-      if (toolId.includes('reply_email') || (partType === 'tool' && toolId.includes('reply'))) {
-        logger.info('reply_email tool part detected', {
+      // Match any part that references the reply tool (reply_email or reply_message)
+      if (toolId.includes('reply_email') || toolId.includes('reply_message') || (partType === 'tool' && toolId.includes('reply'))) {
+        logger.info('Reply tool part detected', {
           type: partType,
           tool: toolId,
           status: partStatus,
@@ -842,18 +847,19 @@ export class OpenCodeService {
         if (partStatus === 'completed' || partStatus === 'success' || partStatus === 'done') {
           const output = (part.state?.output || '').toString();
           if (output.toLowerCase().startsWith('error')) {
-            logger.warn('reply_email tool completed with error output', {
-              output: output.substring(0, 200),
+            logger.warn('Reply tool completed with error output (post-hoc)', {
+              tool: toolId,
+              output: output.substring(0, 300),
             });
             continue; // Don't count this as a successful send
           }
-          logger.info('reply_email MCP tool was used successfully');
+          logger.info('Reply MCP tool was used successfully');
           return true;
         }
 
         // Accept if no state is present (some responses don't include state)
         if (!partStatus) {
-          logger.info('reply_email MCP tool detected (no state), assuming success');
+          logger.info('Reply MCP tool detected (no state), assuming success');
           return true;
         }
 
