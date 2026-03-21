@@ -5,6 +5,7 @@ COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun build --compile cli.ts --outfile /build/jiny-m
+RUN bun build --compile src/mcp/reply-tool.ts --outfile /build/jiny-m-reply-tool
 
 # ---
 
@@ -41,8 +42,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled jiny-M binary
+# Copy compiled jiny-M binaries
 COPY --from=builder /build/jiny-m /usr/local/bin/jiny-m
+COPY --from=builder /build/jiny-m-reply-tool /usr/local/bin/jiny-m-reply-tool
 
 # Copy jiny-M source (for rebuilding inside container during bootstrapping)
 COPY --from=builder /build /opt/jiny-m-src/
