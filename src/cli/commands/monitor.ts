@@ -51,7 +51,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       logger.info('Debug logging enabled');
     }
 
-    logger.info('Starting monitor...');
+    logger.info(`Starting jiny-m v${pkg.version}`);
 
     // 1. Load config
     const configManager = await ConfigManager.create(options.config);
