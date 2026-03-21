@@ -1337,7 +1337,7 @@ jiny-M can be used to develop itself — a bootstrapping setup where the AI agen
 │            │                                                     │
 │  Volumes (mounted from host):                                    │
 │    /opt/jiny-m/.jiny/config.json   ← config (from host)         │
-│    /workspace/                     ← workspace (from host)      │
+│    /opt/jiny-m/workspace/           ← workspace (from host)      │
 │      bootstrapping-jiny-M/         ← thread directory           │
 │        system.md                   ← thread-specific AI prompt  │
 │        jiny-m/                     ← git clone of repo          │
@@ -1453,7 +1453,7 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - ${JINY_CONFIG_DIR}:/opt/jiny-m/.jiny
-      - ${JINY_WORKSPACE_DIR}:/workspace
+      - ${JINY_WORKSPACE_DIR}:/opt/jiny-m/workspace
     environment:
       - OPENCODE_API_KEY
       - GH_TOKEN

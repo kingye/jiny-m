@@ -29,7 +29,7 @@ The container mounts four paths from the host:
 |-----------|---------------|---------|
 | `.jiny/` | `/opt/jiny-m/.jiny/` | jiny-M configuration |
 | `.env.jiny` | `/opt/jiny-m/.env` | Secrets — Bun auto-loads, ConfigManager substitutes `${VAR}` in config.json |
-| `workspace/` | `/workspace/` | Thread directories, messages, reply history |
+| `workspace/` | `/opt/jiny-m/workspace/` | Thread directories, messages, reply history |
 | `opencode.jsonc` | `/root/.config/opencode/opencode.jsonc` | OpenCode AI config (API keys, providers, model settings) |
 
 ## Quick Start with Podman
@@ -85,7 +85,7 @@ Create `my-jiny/.jiny/config.json` (secrets use `${VAR}` — resolved from `.env
       }
     }
   ],
-  "workspace": { "folder": "/workspace" },
+  "workspace": { "folder": "workspace" },
   "reply": {
     "enabled": true,
     "mode": "opencode",
@@ -125,7 +125,7 @@ cp ~/.config/opencode/opencode.jsonc my-jiny/opencode.jsonc
 podman run -d --name jiny-m \
   -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
   -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
-  -v $(pwd)/my-jiny/workspace:/workspace \
+  -v $(pwd)/my-jiny/workspace:/opt/jiny-m/workspace \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   -e GH_TOKEN=ghp_your_token \
   -e GIT_USER_NAME=kingye \
@@ -174,7 +174,7 @@ podman rm -f jiny-m
 podman run -d --name jiny-m \
   -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
   -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
-  -v $(pwd)/my-jiny/workspace:/workspace \
+  -v $(pwd)/my-jiny/workspace:/opt/jiny-m/workspace \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   jiny-m:latest
 ```

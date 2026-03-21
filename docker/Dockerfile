@@ -57,6 +57,6 @@ RUN touch /etc/s6-overlay/s6-rc.d/user/contents.d/jiny-m
 WORKDIR /opt/jiny-m
 
 # Volumes: config, workspace, opencode config, and .env mounted from host
-VOLUME ["/opt/jiny-m/.jiny", "/workspace", "/root/.config/opencode"]
+VOLUME ["/opt/jiny-m/.jiny", "/opt/jiny-m/workspace", "/root/.config/opencode"]
 
 ENTRYPOINT ["/init"]
