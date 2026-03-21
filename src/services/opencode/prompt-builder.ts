@@ -48,6 +48,12 @@ export class PromptBuilder {
     parts.push('- `message`: Your reply text');
     parts.push('- `attachments`: Optional filenames to attach from the working directory');
     parts.push('After a successful reply, confirm and stop.');
+    parts.push('');
+    parts.push('## Modes');
+    parts.push('Determine the mode from the user\'s message:');
+    parts.push('- **Plan mode** (plan/计划/analyze/分析/propose/提议/design/设计/review/审查): Only read, search, and think. Do NOT edit files or run commands that modify state. Output your analysis and plan, then ask the user to confirm before executing.');
+    parts.push('- **Build mode** (implement/实现/build/构建/fix/修复/create/创建/deploy/部署): Execute the full workflow — edit files, run tests, commit, etc.');
+    parts.push('- **If unclear**: Default to plan mode. Present your plan and ask the user to confirm before making changes.');
 
     // Append thread-specific system prompt if system.md exists
     try {
