@@ -280,3 +280,31 @@ Verify the opencode.jsonc is mounted:
 ```bash
 podman run --rm --entrypoint="" jiny-m:latest cat /root/.config/opencode/opencode.jsonc
 ```
+
+### Connecting to a local model (Ollama, vLLM, etc.)
+
+If you run a local model server on the host machine, the container can't reach it via `localhost`. Use `host.containers.internal` (podman) or `host.docker.internal` (docker) instead.
+
+In your `opencode.jsonc`:
+
+```jsonc
+{
+  "provider": {
+    "ollama": {
+      "baseURL": "http://host.containers.internal:11434/v1"
+    }
+  }
+}
+```
+
+On macOS with podman machine, `host.containers.internal` resolves automatically. On Linux, you may need:
+
+```bash
+podman run --add-host=host.containers.internal:host-gateway ...
+```
+
+Or use `--network=host` to share the host's network directly (then `localhost` works):
+
+```bash
+podman run --network=host ...
+```
