@@ -236,7 +236,7 @@ export class OpenCodeService {
       session = await this.getOrCreateSession(threadPath);
     }
 
-    const systemPrompt = this.promptBuilder.buildSystemPrompt(threadPath);
+    const systemPrompt = await this.promptBuilder.buildSystemPrompt(threadPath);
     const prompt = await this.promptBuilder.buildPrompt(message, threadPath, messageDir);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });

@@ -30,8 +30,9 @@ export class PromptBuilder {
   /**
    * Build the system prompt (instructions for the AI).
    * Channel-agnostic — references reply_message tool, not reply_email.
+   * If a system.md file exists in the thread directory, its content is appended.
    */
-  buildSystemPrompt(threadPath: string): string {
+  async buildSystemPrompt(threadPath: string): Promise<string> {
     const parts: string[] = [];
 
     if (this.config.systemPrompt) {
@@ -47,6 +48,18 @@ export class PromptBuilder {
     parts.push('- `message`: Your reply text');
     parts.push('- `attachments`: Optional filenames to attach from the working directory');
     parts.push('After a successful reply, confirm and stop.');
+
+    // Append thread-specific system prompt if system.md exists
+    try {
+      const systemMdPath = join(threadPath, 'system.md');
+      const threadSystemPrompt = await readFile(systemMdPath, 'utf-8');
+      if (threadSystemPrompt.trim()) {
+        parts.push('');
+        parts.push(threadSystemPrompt.trim());
+      }
+    } catch {
+      // No system.md — fine, use standard system prompt only
+    }
 
     return parts.join('\n');
   }
