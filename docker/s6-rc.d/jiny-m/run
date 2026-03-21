@@ -1,2 +1,3 @@
 #!/command/execlineb -P
+cd /opt/jiny-m
 /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m
