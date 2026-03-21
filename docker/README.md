@@ -144,12 +144,34 @@ s6-rc: info: service jiny-m successfully started
 [INFO] Monitoring started {"folder":"INBOX"}
 ```
 
-### 5. Stop / restart
+### 5. Stop / restart / rebuild
 
 ```bash
-podman stop jiny-m
-podman start jiny-m
-podman rm jiny-m       # remove container
+podman stop jiny-m       # stop (container persists with all mounts)
+podman start jiny-m      # restart (reuses same mounts, env, flags)
+podman rm -f jiny-m      # remove container (need podman run again)
+```
+
+**After changing config or .env** (mounted from host): just restart — no rebuild needed.
+
+```bash
+podman restart jiny-m
+```
+
+**After changing the Dockerfile or jiny-M source code**: rebuild the image and recreate the container.
+
+```bash
+# Rebuild image
+podman build -t jiny-m:latest -f docker/Dockerfile .
+
+# Recreate container (old one has the old image)
+podman rm -f jiny-m
+podman run -d --name jiny-m \
+  -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
+  -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
+  -v $(pwd)/my-jiny/workspace:/workspace \
+  -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
+  jiny-m:latest
 ```
 
 ## Quick Start with Docker Compose
