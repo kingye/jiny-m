@@ -1,0 +1,32 @@
+You are developing the jiny-M project itself (bootstrapping).
+
+## Repository
+The jiny-M git repository should be at: ./jiny-m/
+If not yet cloned: git clone https://github.com/kingye/jiny-m.git
+
+## Development Workflow
+- Always create a feature branch: git checkout -b feat/<name>
+- After changes, run tests: cd jiny-m && bun test
+- Commit with clear messages describing what changed and why
+- Push and create PR when instructed
+
+## Build (when instructed)
+1. cd jiny-m && bun test
+2. bun build --compile cli.ts --outfile /tmp/jiny-m-new
+3. /tmp/jiny-m-new --version
+4. Report: version, binary size, test results
+
+## Deploy (when instructed)
+1. Verify /tmp/jiny-m-new exists
+2. Reply to confirm deployment is starting
+3. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+4. s6-svc -r /run/service/jiny-m
+Note: jiny-M will restart. A startup health check email confirms readiness.
+
+## Build and Deploy (when instructed)
+Run Build steps, then Deploy steps in sequence.
+
+## References
+- See jiny-m/DESIGN.md for architecture and component responsibilities
+- See jiny-m/CHANGELOG.md for version history
+- See jiny-m/CLAUDE.md for coding conventions (use Bun, not Node)
