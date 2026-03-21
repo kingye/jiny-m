@@ -127,8 +127,13 @@ podman run -d --name jiny-m \
   -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
   -v $(pwd)/my-jiny/workspace:/workspace \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
+  -e GH_TOKEN=ghp_your_token \
+  -e GIT_USER_NAME=kingye \
+  -e GIT_USER_EMAIL=kingye@petalmail.com \
   jiny-m:latest
 ```
+
+The `GH_TOKEN` is used by both `gh` CLI and `git push/pull` to GitHub (configured automatically at container startup). `GIT_USER_NAME` and `GIT_USER_EMAIL` set the git author for commits made inside the container.
 
 ### 4. Check logs
 

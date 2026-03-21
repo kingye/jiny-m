@@ -5,9 +5,11 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - ${JINY_CONFIG_DIR:-./.jiny}:/opt/jiny-m/.jiny
+      - ${JINY_ENV_FILE:-./.env.jiny}:/opt/jiny-m/.env:ro
       - ${JINY_WORKSPACE_DIR:-./workspace}:/workspace
       - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/opencode.jsonc:ro
-      - ${JINY_ENV_FILE:-./.env.jiny}:/opt/jiny-m/.env:ro
     environment:
       - GH_TOKEN
+      - GIT_USER_NAME
+      - GIT_USER_EMAIL
     restart: unless-stopped
