@@ -984,12 +984,23 @@ export class OpenCodeService {
       const binDir = dirname(mainBinary);
       const replyToolBinary = join(binDir, 'jiny-m-reply-tool');
       if (existsSync(replyToolBinary)) {
+        logger.debug('Reply tool: using compiled binary', { path: replyToolBinary });
         return { toolCommand: [replyToolBinary] };
+      }
+    }
+
+    // Also check common installed locations (for container/system installs)
+    const commonPaths = ['/usr/local/bin/jiny-m-reply-tool', '/usr/bin/jiny-m-reply-tool'];
+    for (const p of commonPaths) {
+      if (existsSync(p)) {
+        logger.debug('Reply tool: found at common path', { path: p });
+        return { toolCommand: [p] };
       }
     }
 
     // Development mode: use bun run with the .ts source
     const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
+    logger.debug('Reply tool: using development mode', { path: toolPath });
     return { toolCommand: ['bun', 'run', toolPath] };
   }
 
