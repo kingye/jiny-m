@@ -5,6 +5,7 @@ import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
 import type { OpenCodeConfig, ThreadSession, AiGeneratedReply, GeneratedFile, InboundMessage } from '../../types';
 import { logger } from '../../core/logger';
 import { PromptBuilder } from './prompt-builder';
+import { readModelOverride } from '../../core/command-handler/handlers/ModelCommandHandler';
 
 type OpenCodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -82,8 +83,10 @@ export class OpenCodeService {
     const { toolCommand } = this.getReplyToolCommand();
 
     // Build expected model strings in "provider/model" format for opencode.json
-    const expectedModel = this.getModelString();
-    const expectedSmallModel = this.getSmallModelString();
+    // Model override from /model command takes priority over config
+    const modelOverride = await readModelOverride(threadPath);
+    const expectedModel = modelOverride || this.getModelString();
+    const expectedSmallModel = modelOverride ? undefined : this.getSmallModelString();
 
     // Check if config already exists and is up to date
     try {
@@ -94,6 +97,7 @@ export class OpenCodeService {
         const expectedCommand = JSON.stringify(toolCommand);
         if (existingCommand === expectedCommand &&
             content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd() &&
+            content?.tools?.question === false &&
             (content?.model ?? undefined) === expectedModel &&
             (content?.small_model ?? undefined) === expectedSmallModel) {
           return false; // Config already up to date
@@ -116,6 +120,10 @@ export class OpenCodeService {
     }
 
     opencodeConfig.permission = { '*': 'allow' };
+    // Disable interactive tools — jiny-M runs headless (no terminal)
+    opencodeConfig.tools = {
+      question: false,
+    };
     opencodeConfig.mcp = {
       'jiny_reply': {
         type: 'local',
@@ -236,7 +244,7 @@ export class OpenCodeService {
       session = await this.getOrCreateSession(threadPath);
     }
 
-    const systemPrompt = this.promptBuilder.buildSystemPrompt(threadPath);
+    const systemPrompt = await this.promptBuilder.buildSystemPrompt(threadPath);
     const prompt = await this.promptBuilder.buildPrompt(message, threadPath, messageDir);
 
     logger.debug('Sending prompt to OpenCode', { sessionId: session.sessionId, threadPath });
@@ -984,12 +992,23 @@ export class OpenCodeService {
       const binDir = dirname(mainBinary);
       const replyToolBinary = join(binDir, 'jiny-m-reply-tool');
       if (existsSync(replyToolBinary)) {
+        logger.debug('Reply tool: using compiled binary', { path: replyToolBinary });
         return { toolCommand: [replyToolBinary] };
+      }
+    }
+
+    // Also check common installed locations (for container/system installs)
+    const commonPaths = ['/usr/local/bin/jiny-m-reply-tool', '/usr/bin/jiny-m-reply-tool'];
+    for (const p of commonPaths) {
+      if (existsSync(p)) {
+        logger.debug('Reply tool: found at common path', { path: p });
+        return { toolCommand: [p] };
       }
     }
 
     // Development mode: use bun run with the .ts source
     const toolPath = resolve(__dirname, '../../mcp/reply-tool.ts');
+    logger.debug('Reply tool: using development mode', { path: toolPath });
     return { toolCommand: ['bun', 'run', toolPath] };
   }
 

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-21
+
+### Added
+- **Bootstrapping**: Docker setup for self-development — jiny-M develops itself via email instructions
+  - Dockerfile with multi-stage build: bun, git, opencode, gh, ripgrep, s6-overlay
+  - Compiled `jiny-m-reply-tool` binary for MCP tool in container
+  - s6-overlay supervisor with auto-restart, .env sourcing, GH_TOKEN git config
+  - docker-compose.yml with 4 volume mounts (config, .env, workspace, opencode.jsonc)
+  - Docker README with setup, mounts, bootstrapping workflow, troubleshooting
+- **Thread-specific system prompt** (`system.md`): Optional file in thread directory, appended to AI system prompt. Enables domain-specific behavior per conversation.
+- **Plan/Build mode detection**: General system prompt detects user intent from keywords (EN + CN). Plan mode = read-only analysis. Build mode = full execution. Defaults to plan if unclear.
+- **`/model` command**: Switch AI model per thread via email
+  - `/model <id>` — switch to specific model (persists via `.jiny/model-override`)
+  - `/model` — list available models from opencode.jsonc
+  - `/model reset` — revert to default model from config
+- **Startup health check email**: Monitor sends startup notification with version on start
+- **Headless mode**: `question` tool disabled in opencode.json (no interactive terminal)
+- **Command system wired into processing pipeline**: Commands parsed and executed between message storage and AI prompt generation
+
+### Fixed
+- **Fallback reply includes quoted history**: `sendFallbackReply()` and `sendDirectReply()` now build full reply (AI text + quoted history) using `formatQuotedReply()`, matching the MCP tool path
+- **Reply-tool binary for container**: Compiled `jiny-m-reply-tool` at `/usr/local/bin/`, with fallback path detection
+- **system.md debug logging**: Logs success (path + length) or error (actual error message) instead of silent catch
+- **Workspace mount path**: Consistent `/opt/jiny-m/workspace` (was `/workspace`, causing system.md invisible)
+- **s6 run script**: bash with `cd /opt/jiny-m` + `.env` sourcing (was execlineb without cwd)
+- **Startup notification ordering**: Sent before inbound adapters start (adapters block forever)
+
+### Changed
+- **`formatQuotedReply()` moved to shared utility** (`email-parser.ts`): Used by both MCP tool path (reads received.md from file) and fallback path (uses in-memory message)
+- **`AttachCommandHandler` removed**: Replaced by `/model` command system
+- **`CommandResult` interface**: Added `message` field for command feedback
+- **`buildSystemPrompt()` is now async**: File I/O for system.md reading
+
+### Documentation
+- DESIGN.md: Bootstrapping section (architecture, deploy sequence, Docker setup, system.md, modes)
+- DESIGN.md: Email Command System section (/model, architecture, persistence, adding new commands)
+- Docker README: setup, mounts, bootstrapping workflow, local model connectivity, troubleshooting
+
 ## [0.1.5] - 2026-03-21
 
 ### Fixed
@@ -131,6 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone binary build support (`bun build --compile`)
 - `--workdir` flag for flexible deployment
 
+[0.2.0]: https://github.com/kingye/jiny-m/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/kingye/jiny-m/compare/v0.1.3...v0.1.5
 [0.1.3]: https://github.com/kingye/jiny-m/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kingye/jiny-m/compare/v0.1.1...v0.1.2

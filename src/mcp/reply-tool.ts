@@ -21,6 +21,7 @@ import type { ReplyContext } from './context';
 import type { OutboundAdapter, InboundMessage } from '../channels/types';
 import { ConfigManager } from '../config';
 import { MessageStorage } from '../core/message-storage';
+import { formatQuotedReply } from '../core/email-parser';
 import { PathValidator } from '../core/security';
 
 // Email-specific imports (loaded on demand when channel is "email")
@@ -430,55 +431,6 @@ function getContentType(ext: string): string {
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   };
   return types[ext] || 'application/octet-stream';
-}
-
-/**
- * Format a quoted reply block in markdown.
- * Takes the full body as-is — NO stripping, NO cleaning.
- * Cleaning happens at ingest time in InboundAdapter, not here.
- *
- * Returns empty string if bodyText is empty (no quoted block needed).
- */
-function formatQuotedReply(
-  sender: string,
-  timestamp: Date | string,
-  subject: string,
-  bodyText: string,
-): string {
-  if (!bodyText.trim()) return '';
-
-  // Format time with Invalid Date fallback
-  let timeStr: string;
-  try {
-    const d = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
-    timeStr = (d instanceof Date && !isNaN(d.getTime()))
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  // Extract display name — strip angle brackets and nested brackets
-  let fromName = sender || 'Unknown';
-  if (fromName.includes('<')) {
-    fromName = fromName.split('<')[0]?.trim().replace(/['"]/g, '') || fromName;
-  }
-  fromName = fromName.replace(/\s*\[.*$/, '').trim();
-  if (!fromName) fromName = sender || 'Unknown';
-
-  const lines: string[] = [];
-  lines.push('---');
-  lines.push(`### ${fromName} (${timeStr})`);
-  lines.push('> ' + subject);
-  lines.push('');
-
-  const quotedBody = bodyText
-    .split('\n')
-    .map((line: string) => `> ${line}`)
-    .join('\n');
-  lines.push(quotedBody);
-
-  return lines.join('\n');
 }
 
 // Start the MCP server

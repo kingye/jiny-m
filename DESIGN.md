@@ -129,6 +129,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 10. **State Manager** - Track processed UIDs per channel, handle migrations
 11. **Security Module** - Path validation, file size/extension checks for attachments
 12. **Alert Service** - Error alert digests + periodic health check reports via email
+13. **Command System** - Email `/command` parsing and execution (e.g., `/model` for model switching)
 
 ### Design Principles: Component Responsibilities
 
@@ -510,19 +511,22 @@ MessageStorage.store(msg, threadName)
   → returns { messageDir, threadPath }
        ↓
 ensureThreadOpencodeSetup(threadPath)
-  → writes opencode.json with:
-    - model + small_model from config
-    - MCP config: jiny_reply server
-    - permission: { "*": "allow" }
-  → staleness check: rewrites if model, tool path, or JINY_ROOT changed
+   → writes opencode.json with:
+     - model + small_model from config
+     - MCP config: jiny_reply server
+     - permission: { "*": "allow" }
+     - tools: { question: false } (headless mode)
+   → staleness check: rewrites if model, tool path, JINY_ROOT, or tools changed
        ↓
 OpenCodeService.generateReply(msg, threadPath, messageDir)
        ↓
 PromptBuilder.buildPrompt(msg, threadPath, messageDir)
   → buildPromptContext(): reads messages/*/ (stripped + truncated)
   → Incoming message body (stripped)
-  → <reply_context> with channel + channelMetadata + incomingMessageDir
-  → Reply instructions: use reply_message tool
+   → <reply_context> with channel + channelMetadata + incomingMessageDir
+   → Reply instructions: use reply_message tool
+   → Mode instructions: plan mode vs build mode (from user's keywords)
+   → Thread-specific system.md (if exists)
        ↓
 promptWithProgress() (SSE streaming):
   1. Subscribe to SSE events ({ directory: threadPath })
@@ -644,6 +648,8 @@ A single shared OpenCode server handles all threads. Each thread session operate
 - **Per-session directory** - `query.directory` parameter tells OpenCode where to work
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
 - **Model config via opencode.json** - `model` and `small_model` written to per-thread config; staleness check detects changes
+- **Headless mode** - `tools: { question: false }` disables interactive tools; staleness check ensures it's set
+- **Compiled reply-tool** - In Docker, `jiny-m-reply-tool` binary found at `/usr/local/bin/`; fallback to `bun run` in dev mode
 - **SSE streaming** - `promptAsync()` + `event.subscribe()` for real-time progress and tool detection
 - **Activity-based timeout** - No fixed deadline; times out if AI goes silent for 2 min (5 min when a tool is actively running, since OpenCode doesn't emit SSE events during tool execution)
 - **Fallback** - If SSE subscription fails, falls back to blocking `prompt()` with 5-min timeout
@@ -747,16 +753,30 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
   "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
   "small_model": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
   "permission": { "*": "allow" },
+  "tools": {
+    "question": false
+  },
   "mcp": {
     "jiny_reply": {
       "type": "local",
-      "command": ["bun", "run", "<absolute-path>/src/mcp/reply-tool.ts"],
+      "command": ["/usr/local/bin/jiny-m-reply-tool"],
       "environment": { "JINY_ROOT": "<root-dir>" },
       "enabled": true,
       "timeout": 60000
     }
   }
 }
+```
+
+**Tool command resolution** (`getReplyToolCommand()`):
+1. Check for `jiny-m-reply-tool` next to the main binary (`process.argv[0]`)
+2. Check common paths: `/usr/local/bin/jiny-m-reply-tool`, `/usr/bin/jiny-m-reply-tool`
+3. Fallback (dev mode): `bun run <source>/src/mcp/reply-tool.ts`
+
+**Disabled tools:**
+- `question: false` — jiny-M runs headless via email, no interactive terminal. The `question` tool would hang indefinitely.
+
+**Staleness check**: Rewrites `opencode.json` if model, tool path, JINY_ROOT, or `tools.question` changed.
 ```
 
 - `model` and `small_model` from jiny-m config (`reply.opencode.model` / `reply.opencode.smallModel`)
@@ -1091,7 +1111,87 @@ Configurable per pattern via `attachments` in the pattern config.
 - Path validation for all file operations (PathValidator)
 - Attachment security: extension allowlist, size limit, filename sanitization
 - MCP tool: validate context before processing
-- `permission: { "*": "allow" }` in opencode.json prevents headless blocking; consider tightening for production
+- `permission: { "*": "allow" }` in opencode.json allows all non-interactive tools
+- `tools: { question: false }` disables the interactive question tool (headless mode)
+- `system.md` per-thread customization — file permissions should restrict who can modify thread directories
+
+## Email Command System
+
+Users can include commands in email messages using `/command` syntax. Commands are parsed and executed before the AI processes the message. Command lines are stripped from the body so the AI doesn't see them.
+
+### Available Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/model <id>` | Switch AI model for this thread | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
+| `/model` | List available models | `/model` |
+| `/model reset` | Reset to default model from config | `/model reset` |
+
+### Architecture
+
+```
+Email body: "/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2\n\nImplement feature X"
+  │
+  ▼
+CommandRegistry.parseCommands(body)
+  → finds /model command
+  │
+  ▼
+ModelCommandHandler.execute()
+  → writes .jiny/model-override file (persists across messages)
+  → deletes .jiny/session.json (force new session)
+  │
+  ▼
+Strip /model line from body
+  → "Implement feature X" (clean body for AI)
+  │
+  ▼
+ensureThreadOpencodeSetup()
+  → reads .jiny/model-override
+  → uses override model instead of config default
+  → writes opencode.json with override model
+  │
+  ▼
+AI processes with new model
+```
+
+### Model Override Persistence
+
+The `/model` command writes the model ID to `.jiny/model-override` in the thread directory. This persists across messages — subsequent emails in the same thread use the overridden model until `/model reset` is sent.
+
+```
+<threadPath>/.jiny/
+  model-override      ← contains model ID (e.g., "SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2")
+  session.json        ← deleted on model switch (forces new session)
+```
+
+`ensureThreadOpencodeSetup()` reads the override file and uses it over the config default via `readModelOverride(threadPath)`.
+
+### Command Processing Flow (in `thread-manager.ts`)
+
+```
+processMessage():
+  1. MessageStorage.store() → received.md (full body including commands)
+  2. CommandRegistry.parseCommands() → find /model etc.
+  3. Execute commands (model switch, etc.)
+  4. Strip command lines from body
+  5. ensureThreadOpencodeSetup() → opencode.json (with model override)
+  6. PromptBuilder → build prompt (cleaned body)
+  7. OpenCode → AI processes → reply
+```
+
+### Adding New Commands
+
+1. Create a handler implementing `CommandHandler` interface:
+   ```typescript
+   interface CommandHandler {
+     name: string;          // e.g., "/mycommand"
+     description: string;
+     execute(context: CommandContext): Promise<CommandResult>;
+   }
+   ```
+2. Register it in `CommandRegistry.registerDefaultHandlers()`
+3. The command is automatically parsed from email bodies and executed
 
 ## Migration
 
@@ -1308,3 +1408,274 @@ interface HealthCheckConfig {
 ```
 
 The AlertService requires the email outbound adapter to be connected. If SMTP connection fails, alerting is skipped with a warning.
+
+## Bootstrapping: Using jiny-M to Develop jiny-M
+
+### Overview
+
+jiny-M can be used to develop itself — a bootstrapping setup where the AI agent receives development instructions via email, makes code changes, runs tests, builds releases, and deploys them. The system runs in a Docker container with a supervisor that handles restarts after deployment.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Docker Container                          │
+│                                                                  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │                  s6-overlay (supervisor)                    │  │
+│  │                                                            │  │
+│  │  ┌──────────────┐           ┌──────────────┐              │  │
+│  │  │   jiny-M     │           │   OpenCode   │              │  │
+│  │  │  (monitor)   │           │   (server)   │              │  │
+│  │  │              │           │              │              │  │
+│  │  │  watches     │           │  AI backend  │              │  │
+│  │  │  email       │           │  for coding  │              │  │
+│  │  └──────┬───────┘           └──────────────┘              │  │
+│  │         │                                                  │  │
+│  │         │  On deploy: replace binary → s6 auto-restarts    │  │
+│  └─────────┼──────────────────────────────────────────────────┘  │
+│            │                                                     │
+│  Volumes (mounted from host):                                    │
+│    /opt/jiny-m/.jiny/config.json   ← config (from host)         │
+│    /opt/jiny-m/.env                ← secrets (Bun auto-loads)    │
+│    /opt/jiny-m/workspace/          ← workspace (from host)       │
+│      bootstrapping-jiny-M/         ← thread directory            │
+│        system.md                   ← thread-specific AI prompt   │
+│        jiny-m/                     ← git clone of repo           │
+│        messages/                   ← email conversation          │
+│    /root/.config/opencode/         ← OpenCode config (from host) │
+│      opencode.jsonc                ← API keys, providers         │
+│                                                                  │
+│  Binaries:                                                       │
+│    /usr/local/bin/jiny-m           ← main CLI (compiled)         │
+│    /usr/local/bin/jiny-m-reply-tool← MCP tool (compiled)         │
+│                                                                  │
+│  Dev tools: bun, git, opencode, ripgrep, gh, jq                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+#### Thread-Specific System Prompt (`system.md`)
+
+If a `system.md` file exists in a thread directory, its content is appended to the AI's system prompt for that thread. This enables domain-specific behavior per conversation without code changes.
+
+```
+<threadPath>/
+  system.md       ← optional, thread-specific system prompt
+  messages/       ← conversation history
+  opencode.json   ← per-thread OpenCode config
+```
+
+**PromptBuilder** reads `system.md` in `buildSystemPrompt(threadPath)`:
+- File exists → append content to system prompt
+- File missing → no-op (standard system prompt only)
+
+This is a generic feature — not limited to bootstrapping. Any thread can have a `system.md` for domain-specific instructions (e.g., "you are a support agent for product X", "you are a code reviewer for repo Y").
+
+#### Plan/Build Mode Detection
+
+The general system prompt (all threads) includes mode detection from the user's message keywords:
+
+- **Plan mode** (plan/计划/analyze/分析/design/设计/review/审查): Read-only — AI only reads, searches, and thinks. Outputs analysis and plan, asks user to confirm before executing.
+- **Build mode** (implement/实现/build/构建/fix/修复/create/创建/deploy/部署): Full execution — AI edits files, runs tests, commits, etc.
+- **If unclear**: Defaults to plan mode. Presents plan and asks for confirmation.
+
+This is part of the general system prompt in `PromptBuilder.buildSystemPrompt()`, not in `system.md`. Supports both English and Chinese keywords.
+
+#### Headless Mode (Disabled Interactive Tools)
+
+jiny-M runs headless via email — no interactive terminal. The `question` tool is disabled in `opencode.json` (`tools: { question: false }`). If the AI needs clarification, it should include its question in the reply email and wait for the user to respond in the next email.
+
+#### Startup Health Check Email
+
+When the monitor starts, it sends a one-time startup notification email to the configured alerting recipient. This confirms:
+- jiny-M started successfully
+- Version number
+- Timestamp
+
+This is essential for the deploy flow: after the AI replaces the binary and triggers a restart, the user receives this email to know the new version is running and ready.
+
+#### Build and Deploy Workflow
+
+Build and deploy are independent operations. The user can request either one separately or both together via email instructions. The AI executes them as bash commands — no special jiny-M feature needed, just `system.md` instructions.
+
+**Build** (when instructed):
+```
+1. cd jiny-m && bun test           ← run tests first
+2. bun build --compile cli.ts      ← compile standalone binary
+   --outfile /tmp/jiny-m-new
+3. /tmp/jiny-m-new --version       ← verify build
+4. Report results to user
+```
+
+**Deploy** (when instructed):
+```
+1. Verify /tmp/jiny-m-new exists
+2. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+3. Reply "deploying, restarting..."
+4. s6-svc -r /run/service/jiny-m   ← trigger supervisor restart
+   → jiny-M stops
+   → supervisor restarts with new binary
+   → new jiny-M sends startup health check email
+   → user receives "started v0.1.6" email
+   → user continues conversation
+```
+
+**Build and Deploy** (when instructed):
+```
+Run Build steps, then Deploy steps in sequence.
+```
+
+### Deploy Restart Sequence
+
+```
+User email: "deploy the new release"
+  │
+  ▼
+AI (in OpenCode):
+  1. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+  2. Send reply: "deploying, restarting..."
+  3. s6-svc -r /run/service/jiny-m
+  │
+  ▼
+s6 supervisor detects jiny-M exit:
+  → restarts jiny-M with new binary
+  │
+  ▼
+New jiny-M starts:
+  → connects to IMAP/SMTP
+  → sends startup health check email
+  → resumes monitoring
+  │
+  ▼
+User receives:
+  1. Reply email: "deploying, restarting..."
+  2. Health check email: "jiny-M v0.1.6 started"
+  → user continues sending instructions
+```
+
+### Docker Setup
+
+**Dockerfile** (`docker/Dockerfile`):
+- Base: `oven/bun:latest` (multi-stage build)
+- Dev tools: git, ripgrep, jq, curl, inotify-tools
+- s6-overlay for process supervision (auto-detects x86_64/aarch64)
+- OpenCode CLI
+- GitHub CLI (for PR workflow)
+- Two compiled binaries: `jiny-m` (main) + `jiny-m-reply-tool` (MCP tool)
+- jiny-M source at `/opt/jiny-m-src/` (for rebuilding during bootstrapping)
+
+**Volume mounts** (4 volumes from host):
+```yaml
+services:
+  jiny-m:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ${JINY_CONFIG_DIR}:/opt/jiny-m/.jiny          # config.json (with ${VAR} refs)
+      - ${JINY_ENV_FILE}:/opt/jiny-m/.env:ro           # secrets (Bun auto-loads)
+      - ${JINY_WORKSPACE_DIR}:/opt/jiny-m/workspace    # thread dirs, messages
+      - ${OPENCODE_CONFIG}:/root/.config/opencode/opencode.jsonc:ro  # AI provider config
+    environment:
+      - GH_TOKEN            # GitHub CLI auth
+      - GIT_USER_NAME       # git commit author
+      - GIT_USER_EMAIL      # git commit email
+    restart: unless-stopped
+```
+
+**s6 service** (`docker/s6-rc.d/jiny-m/run`):
+```bash
+#!/bin/bash
+cd /opt/jiny-m
+
+# Load .env (for both bash script and Bun)
+if [ -f .env ]; then
+  set -a; source .env; set +a
+fi
+
+# Configure git/gh from GH_TOKEN (if provided)
+if [ -n "$GH_TOKEN" ]; then
+  git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+  git config --global user.name "${GIT_USER_NAME:-jiny-m}"
+  git config --global user.email "${GIT_USER_EMAIL:-jiny-m@bot}"
+fi
+
+exec /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m
+```
+
+**Secrets management:**
+- `config.json` uses `${VAR}` syntax (e.g., `${IMAP_PASSWORD}`)
+- `ConfigManager.expandEnvVars()` substitutes from `process.env`
+- Bun auto-loads `.env` from `/opt/jiny-m/.env` (working directory)
+- The s6 run script sources `.env` before starting (for GH_TOKEN in bash)
+
+**Local model connectivity:**
+- Inside container, `host.containers.internal` (podman) or `host.docker.internal` (docker) reaches the host machine
+- On macOS with podman machine: resolves automatically to `192.168.127.254`
+- Use in `opencode.jsonc`: `"baseURL": "http://host.containers.internal:11434/v1"`
+
+### Example `system.md` for Bootstrapping
+
+```markdown
+You are developing the jiny-M project itself (bootstrapping).
+
+## Repository
+The jiny-M git repository should be at: ./jiny-m/
+If not yet cloned: git clone https://github.com/kingye/jiny-m.git
+
+## Development Workflow
+- Always create a feature branch: git checkout -b feat/<name>
+- After changes, run tests: cd jiny-m && bun test
+- Commit with clear messages describing what changed and why
+- Push and create PR when instructed
+
+## Build (when instructed)
+1. cd jiny-m && bun test
+2. bun build --compile cli.ts --outfile /tmp/jiny-m-new
+3. /tmp/jiny-m-new --version
+4. Report: version, binary size, test results
+
+## Deploy (when instructed)
+1. Verify /tmp/jiny-m-new exists
+2. Reply to confirm deployment is starting
+3. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+4. s6-svc -r /run/service/jiny-m
+Note: jiny-M will restart. A startup health check email confirms readiness.
+
+## Build and Deploy (when instructed)
+Run Build steps, then Deploy steps in sequence.
+
+## References
+- See jiny-m/DESIGN.md for architecture and component responsibilities
+- See jiny-m/CHANGELOG.md for version history
+- See jiny-m/CLAUDE.md for coding conventions (use Bun, not Node)
+```
+
+### Files for Bootstrapping
+
+```
+docker/
+  Dockerfile                  # Full dev environment (multi-stage, multi-arch)
+  docker-compose.yml          # Volume mounts, env vars
+  .env.example                # Template for secrets and paths
+  README.md                   # Setup, mounts, bootstrapping, troubleshooting
+  s6-rc.d/
+    jiny-m/
+      type                    # "longrun"
+      run                     # Service run script (bash, sources .env, configures git)
+  system.md.example           # Example system.md for bootstrapping
+```
+
+### Implementation Changes in jiny-M
+
+| # | Feature | File | Description |
+|---|---------|------|-------------|
+| 1 | `system.md` support | `src/services/opencode/prompt-builder.ts` | Read optional `<threadPath>/system.md`, append to system prompt |
+| 2 | Plan/Build modes | `src/services/opencode/prompt-builder.ts` | Mode detection from user keywords (EN + CN) in general system prompt |
+| 3 | Disable `question` tool | `src/services/opencode/index.ts` | `tools: { question: false }` in opencode.json (headless mode) |
+| 4 | Compiled reply-tool binary | `docker/Dockerfile` | `bun build --compile src/mcp/reply-tool.ts` alongside main binary |
+| 5 | Common path fallback | `src/services/opencode/index.ts` | `getReplyToolCommand()` checks `/usr/local/bin/` for compiled binary |
+| 6 | Startup health check | `src/cli/commands/monitor.ts` | Send startup email before starting inbound adapters |
+| 7 | Docker setup | `docker/` | Dockerfile, s6 config, compose, .env, README, examples |

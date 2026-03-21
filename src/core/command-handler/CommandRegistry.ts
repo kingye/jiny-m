@@ -1,7 +1,7 @@
 import type { CommandHandler, ParsedCommand } from './CommandHandler';
 import type { CommandContext, CommandResult } from './CommandHandler';
 import { logger } from '../logger';
-import { AttachCommandHandler } from './handlers/AttachCommandHandler';
+import { ModelCommandHandler } from './handlers/ModelCommandHandler';
 
 export class CommandRegistry {
   private handlers: Map<string, CommandHandler> = new Map();
@@ -11,7 +11,7 @@ export class CommandRegistry {
   }
 
   private registerDefaultHandlers(): void {
-    this.register(new AttachCommandHandler());
+    this.register(new ModelCommandHandler());
   }
 
   register(handler: CommandHandler): void {

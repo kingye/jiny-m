@@ -30,8 +30,9 @@ export class PromptBuilder {
   /**
    * Build the system prompt (instructions for the AI).
    * Channel-agnostic — references reply_message tool, not reply_email.
+   * If a system.md file exists in the thread directory, its content is appended.
    */
-  buildSystemPrompt(threadPath: string): string {
+  async buildSystemPrompt(threadPath: string): Promise<string> {
     const parts: string[] = [];
 
     if (this.config.systemPrompt) {
@@ -47,6 +48,25 @@ export class PromptBuilder {
     parts.push('- `message`: Your reply text');
     parts.push('- `attachments`: Optional filenames to attach from the working directory');
     parts.push('After a successful reply, confirm and stop.');
+    parts.push('');
+    parts.push('## Modes');
+    parts.push('Determine the mode from the user\'s message:');
+    parts.push('- **Plan mode** (plan/计划/analyze/分析/propose/提议/design/设计/review/审查): Only read, search, and think. Do NOT edit files or run commands that modify state. Output your analysis and plan, then ask the user to confirm before executing.');
+    parts.push('- **Build mode** (implement/实现/build/构建/fix/修复/create/创建/deploy/部署): Execute the full workflow — edit files, run tests, commit, etc.');
+    parts.push('- **If unclear**: Default to plan mode. Present your plan and ask the user to confirm before making changes.');
+
+    // Append thread-specific system prompt if system.md exists
+    try {
+      const systemMdPath = join(threadPath, 'system.md');
+      const threadSystemPrompt = await readFile(systemMdPath, 'utf-8');
+      if (threadSystemPrompt.trim()) {
+        logger.info('Loaded thread system.md', { path: systemMdPath, length: threadSystemPrompt.trim().length });
+        parts.push('');
+        parts.push(threadSystemPrompt.trim());
+      }
+    } catch (err) {
+      logger.debug('No system.md found', { threadPath, error: err instanceof Error ? err.message : 'Unknown' });
+    }
 
     return parts.join('\n');
   }

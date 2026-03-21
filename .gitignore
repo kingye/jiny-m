@@ -28,6 +28,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # workspace (email storage)
 workspace/
 
+# wirking dir for bootstraping
+bootstrapping/
+
 # opencode runtime data
 .opencode/
 

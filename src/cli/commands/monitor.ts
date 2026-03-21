@@ -22,6 +22,7 @@ import { logger } from '../../core/logger';
 import { StateManager } from '../../core/state-manager';
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import pkg from '../../../package.json';
 
 export interface MonitorCommandOptions {
   config?: string;
@@ -155,7 +156,33 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       truncateLength: outputConfig.truncateLength,
     });
 
-    // 9. Start all inbound adapters
+    // 9. Send startup notification email (before starting inbound adapters which block)
+    if (activeAlertService && alertingConfig?.enabled) {
+      try {
+        const emailOutbound = registry.getOutbound('email');
+        if (emailOutbound.sendAlert) {
+          const recipient = alertingConfig.healthCheck?.recipient || alertingConfig.recipient;
+          const subject = `${alertingConfig.subjectPrefix || 'Jiny-M'}: Started v${pkg.version}`;
+          const body = [
+            `Jiny-M Monitor Started`,
+            `======================`,
+            ``,
+            `Version: ${pkg.version}`,
+            `Time: ${new Date().toISOString()}`,
+            `Status: Ready`,
+          ].join('\n');
+          await emailOutbound.sendAlert(recipient, subject, body);
+          logger.info('Startup notification sent', { recipient, version: pkg.version, _alertInternal: true });
+        }
+      } catch (err) {
+        logger.warn('Failed to send startup notification', {
+          error: err instanceof Error ? err.message : 'Unknown',
+          _alertInternal: true,
+        });
+      }
+    }
+
+    // 10. Start all inbound adapters (blocks — starts monitoring loop)
     for (const adapter of registry.getAllInbound()) {
       await adapter.start({
         onMessage: async (message) => {
@@ -182,7 +209,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       logger.info('Inbound adapter started', { channel: adapter.channelType });
     }
 
-    // 10. Register shutdown cleanup (delete session files to prevent stale sessions on restart)
+    // 11. Register shutdown cleanup (delete session files to prevent stale sessions on restart)
     shutdownCleanup = async () => {
       try {
         const entries = await readdir(workspaceConfig.folder, { withFileTypes: true });
