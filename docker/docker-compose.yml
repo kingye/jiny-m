@@ -8,7 +8,5 @@ services:
       - ${JINY_WORKSPACE_DIR:-./workspace}:/workspace
       - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/opencode.jsonc:ro
     environment:
-      - OPENCODE_API_KEY
-      - ANTHROPIC_API_KEY
       - GH_TOKEN
     restart: unless-stopped

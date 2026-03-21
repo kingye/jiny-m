@@ -151,17 +151,13 @@ cd docker/
 cp .env.example .env
 ```
 
-Edit `.env` with your paths and API keys:
+Edit `.env` with your paths:
 
 ```env
 JINY_CONFIG_DIR=/path/to/your/.jiny
 JINY_WORKSPACE_DIR=/path/to/your/workspace
 OPENCODE_CONFIG=/path/to/your/opencode.jsonc
-
-# Optional: API keys (if not in opencode.jsonc)
-OPENCODE_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GH_TOKEN=ghp_...
+GH_TOKEN=ghp_...  # optional, for GitHub PR workflow
 ```
 
 ### 2. Build and run
@@ -269,17 +265,8 @@ podman run -d --name jiny-m \
 
 ### OpenCode can't find API keys
 
-Verify the config is mounted:
+Verify the opencode.jsonc is mounted:
 
 ```bash
 podman run --rm --entrypoint="" jiny-m:latest cat /root/.config/opencode/opencode.jsonc
-```
-
-Or pass API keys via environment:
-
-```bash
-podman run -d --name jiny-m \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v ... \
-  jiny-m:latest
 ```
