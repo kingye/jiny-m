@@ -54,11 +54,12 @@ export class PromptBuilder {
       const systemMdPath = join(threadPath, 'system.md');
       const threadSystemPrompt = await readFile(systemMdPath, 'utf-8');
       if (threadSystemPrompt.trim()) {
+        logger.info('Loaded thread system.md', { path: systemMdPath, length: threadSystemPrompt.trim().length });
         parts.push('');
         parts.push(threadSystemPrompt.trim());
       }
-    } catch {
-      // No system.md — fine, use standard system prompt only
+    } catch (err) {
+      logger.debug('No system.md found', { threadPath, error: err instanceof Error ? err.message : 'Unknown' });
     }
 
     return parts.join('\n');
