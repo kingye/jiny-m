@@ -1,6 +1,13 @@
 #!/bin/bash
 cd /opt/jiny-m
 
+# Load .env file if it exists (same file Bun auto-loads for config.json)
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 # Configure git to use GH_TOKEN for GitHub HTTPS access (if provided)
 if [ -n "$GH_TOKEN" ]; then
   git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
