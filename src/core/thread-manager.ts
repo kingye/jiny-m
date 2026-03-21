@@ -20,6 +20,7 @@ import { ChannelRegistry } from '../channels/registry';
 import { MessageStorage } from './message-storage';
 import { OpenCodeService } from '../services/opencode';
 import { CommandRegistry } from './command-handler';
+import { formatQuotedReply } from './email-parser';
 import { logger } from './logger';
 
 /** Queued item waiting to be processed. */
@@ -299,11 +300,14 @@ export class ThreadManager {
       return;
     }
 
+    // Build full reply with quoted history (same as MCP tool path)
+    const fullReplyText = this.buildFullReplyText(replyText, message);
+
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
       await adapter.connect();
       try {
-        await adapter.sendReply(message, replyText);
+        await adapter.sendReply(message, fullReplyText);
         logger.info('Fallback reply sent', { channel: message.channel });
       } finally {
         await adapter.disconnect().catch(() => {});
@@ -313,7 +317,7 @@ export class ThreadManager {
       logger.error('Failed to send fallback reply', { channel: message.channel, error: msg });
     }
 
-    await this.storage.storeReply(threadPath, replyText, messageDir);
+    await this.storage.storeReply(threadPath, fullReplyText, messageDir);
   }
 
   /**
@@ -325,11 +329,14 @@ export class ThreadManager {
     threadPath: string,
     messageDir: string,
   ): Promise<void> {
+    // Build full reply with quoted history
+    const fullReplyText = this.buildFullReplyText(replyText, message);
+
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
       await adapter.connect();
       try {
-        await adapter.sendReply(message, replyText);
+        await adapter.sendReply(message, fullReplyText);
         logger.info('Direct reply sent', { channel: message.channel });
       } finally {
         await adapter.disconnect().catch(() => {});
@@ -339,7 +346,24 @@ export class ThreadManager {
       logger.error('Failed to send direct reply', { channel: message.channel, error: msg });
     }
 
-    await this.storage.storeReply(threadPath, replyText, messageDir);
+    await this.storage.storeReply(threadPath, fullReplyText, messageDir);
+  }
+
+  /**
+   * Build full reply text with quoted history from the in-memory message.
+   * The message.content.text contains the full body (cleaned at InboundAdapter boundary,
+   * NOT stripped — stripping only happens in PromptBuilder for AI token budget).
+   */
+  private buildFullReplyText(replyText: string, message: InboundMessage): string {
+    const quotedHistory = formatQuotedReply(
+      message.sender,
+      message.timestamp,
+      message.topic,
+      message.content.text || '',
+    );
+    return quotedHistory
+      ? `${replyText}\n\n${quotedHistory}`
+      : replyText;
   }
 
   /** Get current queue statistics. */
