@@ -19,6 +19,7 @@ import type { ReplyConfig, AiGeneratedReply } from '../types';
 import { ChannelRegistry } from '../channels/registry';
 import { MessageStorage } from './message-storage';
 import { OpenCodeService } from '../services/opencode';
+import { CommandRegistry } from './command-handler';
 import { logger } from './logger';
 
 /** Queued item waiting to be processed. */
@@ -203,13 +204,46 @@ export class ThreadManager {
         channel: message.channel,
       });
 
-      // 2. Check if reply is enabled
+      // 2. Process commands (e.g., /model) and strip them from the body
+      const commandRegistry = new CommandRegistry();
+      const commands = commandRegistry.parseCommands(message.content.text);
+      if (commands.length > 0) {
+        for (const cmd of commands) {
+          const result = await commandRegistry.execute(cmd, {
+            email: {
+              id: message.id,
+              from: message.senderAddress || message.sender,
+              subject: message.topic,
+            },
+            threadPath,
+            config: { maxFileSize: '25mb', allowedExtensions: [] },
+          });
+          if (result.message) {
+            logger.info('Command result', { command: cmd.handler.name, message: result.message });
+          }
+        }
+        // Strip executed command lines from the message body so the AI doesn't see them
+        const commandNames = new Set(commands.map(c => c.handler.name));
+        if (message.content.text) {
+          message.content.text = message.content.text
+            .split('\n')
+            .filter(line => {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('/')) return true;
+              const cmdName = trimmed.split(/\s+/)[0]?.toLowerCase();
+              return !cmdName || !commandNames.has(cmdName);
+            })
+            .join('\n');
+        }
+      }
+
+      // 3. Check if reply is enabled
       if (!this.replyConfig.enabled) {
         logger.info('Reply disabled, message stored only', { thread: threadName });
         return;
       }
 
-      // 3. Generate AI reply
+      // 4. Generate AI reply
       if (this.replyConfig.mode === 'opencode' && this.opencode) {
         const aiReply = await this.opencode.generateReply(message, threadPath, messageDir);
 

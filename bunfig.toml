@@ -1,0 +1,3 @@
+[test]
+root = "."
+ignore = ["./workspace/", "./bootstrapping/", "./node_modules/"]

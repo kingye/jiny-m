@@ -15,4 +15,4 @@ if [ -n "$GH_TOKEN" ]; then
   git config --global user.email "${GIT_USER_EMAIL:-jiny-m@bot}"
 fi
 
-exec /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m
+exec /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m --debug

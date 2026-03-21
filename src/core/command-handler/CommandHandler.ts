@@ -28,6 +28,7 @@ export interface CommandContext {
 
 export interface CommandResult {
   success: boolean;
+  message?: string;
   attachments?: Array<{
     timestamp: string;
     filename: string;

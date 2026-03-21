@@ -5,6 +5,7 @@ import { createOpencode, createOpencodeClient } from '@opencode-ai/sdk';
 import type { OpenCodeConfig, ThreadSession, AiGeneratedReply, GeneratedFile, InboundMessage } from '../../types';
 import { logger } from '../../core/logger';
 import { PromptBuilder } from './prompt-builder';
+import { readModelOverride } from '../../core/command-handler/handlers/ModelCommandHandler';
 
 type OpenCodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -82,8 +83,10 @@ export class OpenCodeService {
     const { toolCommand } = this.getReplyToolCommand();
 
     // Build expected model strings in "provider/model" format for opencode.json
-    const expectedModel = this.getModelString();
-    const expectedSmallModel = this.getSmallModelString();
+    // Model override from /model command takes priority over config
+    const modelOverride = await readModelOverride(threadPath);
+    const expectedModel = modelOverride || this.getModelString();
+    const expectedSmallModel = modelOverride ? undefined : this.getSmallModelString();
 
     // Check if config already exists and is up to date
     try {

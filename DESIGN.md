@@ -129,6 +129,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 10. **State Manager** - Track processed UIDs per channel, handle migrations
 11. **Security Module** - Path validation, file size/extension checks for attachments
 12. **Alert Service** - Error alert digests + periodic health check reports via email
+13. **Command System** - Email `/command` parsing and execution (e.g., `/model` for model switching)
 
 ### Design Principles: Component Responsibilities
 
@@ -1113,6 +1114,84 @@ Configurable per pattern via `attachments` in the pattern config.
 - `permission: { "*": "allow" }` in opencode.json allows all non-interactive tools
 - `tools: { question: false }` disables the interactive question tool (headless mode)
 - `system.md` per-thread customization — file permissions should restrict who can modify thread directories
+
+## Email Command System
+
+Users can include commands in email messages using `/command` syntax. Commands are parsed and executed before the AI processes the message. Command lines are stripped from the body so the AI doesn't see them.
+
+### Available Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/model <id>` | Switch AI model for this thread | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
+| `/model` | List available models | `/model` |
+| `/model reset` | Reset to default model from config | `/model reset` |
+
+### Architecture
+
+```
+Email body: "/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2\n\nImplement feature X"
+  │
+  ▼
+CommandRegistry.parseCommands(body)
+  → finds /model command
+  │
+  ▼
+ModelCommandHandler.execute()
+  → writes .jiny/model-override file (persists across messages)
+  → deletes .jiny/session.json (force new session)
+  │
+  ▼
+Strip /model line from body
+  → "Implement feature X" (clean body for AI)
+  │
+  ▼
+ensureThreadOpencodeSetup()
+  → reads .jiny/model-override
+  → uses override model instead of config default
+  → writes opencode.json with override model
+  │
+  ▼
+AI processes with new model
+```
+
+### Model Override Persistence
+
+The `/model` command writes the model ID to `.jiny/model-override` in the thread directory. This persists across messages — subsequent emails in the same thread use the overridden model until `/model reset` is sent.
+
+```
+<threadPath>/.jiny/
+  model-override      ← contains model ID (e.g., "SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2")
+  session.json        ← deleted on model switch (forces new session)
+```
+
+`ensureThreadOpencodeSetup()` reads the override file and uses it over the config default via `readModelOverride(threadPath)`.
+
+### Command Processing Flow (in `thread-manager.ts`)
+
+```
+processMessage():
+  1. MessageStorage.store() → received.md (full body including commands)
+  2. CommandRegistry.parseCommands() → find /model etc.
+  3. Execute commands (model switch, etc.)
+  4. Strip command lines from body
+  5. ensureThreadOpencodeSetup() → opencode.json (with model override)
+  6. PromptBuilder → build prompt (cleaned body)
+  7. OpenCode → AI processes → reply
+```
+
+### Adding New Commands
+
+1. Create a handler implementing `CommandHandler` interface:
+   ```typescript
+   interface CommandHandler {
+     name: string;          // e.g., "/mycommand"
+     description: string;
+     execute(context: CommandContext): Promise<CommandResult>;
+   }
+   ```
+2. Register it in `CommandRegistry.registerDefaultHandlers()`
+3. The command is automatically parsed from email bodies and executed
 
 ## Migration
 
