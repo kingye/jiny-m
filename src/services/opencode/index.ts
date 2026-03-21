@@ -94,6 +94,7 @@ export class OpenCodeService {
         const expectedCommand = JSON.stringify(toolCommand);
         if (existingCommand === expectedCommand &&
             content?.mcp?.['jiny_reply']?.environment?.JINY_ROOT === process.cwd() &&
+            content?.tools?.question === false &&
             (content?.model ?? undefined) === expectedModel &&
             (content?.small_model ?? undefined) === expectedSmallModel) {
           return false; // Config already up to date
@@ -116,6 +117,10 @@ export class OpenCodeService {
     }
 
     opencodeConfig.permission = { '*': 'allow' };
+    // Disable interactive tools — jiny-M runs headless (no terminal)
+    opencodeConfig.tools = {
+      question: false,
+    };
     opencodeConfig.mcp = {
       'jiny_reply': {
         type: 'local',
