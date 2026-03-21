@@ -6,7 +6,7 @@ services:
     volumes:
       - ${JINY_CONFIG_DIR:-./.jiny}:/opt/jiny-m/.jiny
       - ${JINY_WORKSPACE_DIR:-./workspace}:/workspace
-      - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/config.json:ro
+      - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/opencode.jsonc:ro
     environment:
       - OPENCODE_API_KEY
       - ANTHROPIC_API_KEY
