@@ -1308,3 +1308,219 @@ interface HealthCheckConfig {
 ```
 
 The AlertService requires the email outbound adapter to be connected. If SMTP connection fails, alerting is skipped with a warning.
+
+## Bootstrapping: Using jiny-M to Develop jiny-M
+
+### Overview
+
+jiny-M can be used to develop itself — a bootstrapping setup where the AI agent receives development instructions via email, makes code changes, runs tests, builds releases, and deploys them. The system runs in a Docker container with a supervisor that handles restarts after deployment.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Docker Container                          │
+│                                                                  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │                  s6-overlay (supervisor)                    │  │
+│  │                                                            │  │
+│  │  ┌──────────────┐           ┌──────────────┐              │  │
+│  │  │   jiny-M     │           │   OpenCode   │              │  │
+│  │  │  (monitor)   │           │   (server)   │              │  │
+│  │  │              │           │              │              │  │
+│  │  │  watches     │           │  AI backend  │              │  │
+│  │  │  email       │           │  for coding  │              │  │
+│  │  └──────┬───────┘           └──────────────┘              │  │
+│  │         │                                                  │  │
+│  │         │  On deploy: replace binary → s6 auto-restarts    │  │
+│  └─────────┼──────────────────────────────────────────────────┘  │
+│            │                                                     │
+│  Volumes (mounted from host):                                    │
+│    /opt/jiny-m/.jiny/config.json   ← config (from host)         │
+│    /workspace/                     ← workspace (from host)      │
+│      bootstrapping-jiny-M/         ← thread directory           │
+│        system.md                   ← thread-specific AI prompt  │
+│        jiny-m/                     ← git clone of repo          │
+│        messages/                   ← email conversation         │
+│                                                                  │
+│  Dev tools: bun, git, opencode, ripgrep, gh                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+#### Thread-Specific System Prompt (`system.md`)
+
+If a `system.md` file exists in a thread directory, its content is appended to the AI's system prompt for that thread. This enables domain-specific behavior per conversation without code changes.
+
+```
+<threadPath>/
+  system.md       ← optional, thread-specific system prompt
+  messages/       ← conversation history
+  opencode.json   ← per-thread OpenCode config
+```
+
+**PromptBuilder** reads `system.md` in `buildSystemPrompt(threadPath)`:
+- File exists → append content to system prompt
+- File missing → no-op (standard system prompt only)
+
+This is a generic feature — not limited to bootstrapping. Any thread can have a `system.md` for domain-specific instructions (e.g., "you are a support agent for product X", "you are a code reviewer for repo Y").
+
+#### Startup Health Check Email
+
+When the monitor starts, it sends a one-time startup notification email to the configured alerting recipient. This confirms:
+- jiny-M started successfully
+- Version number
+- Timestamp
+
+This is essential for the deploy flow: after the AI replaces the binary and triggers a restart, the user receives this email to know the new version is running and ready.
+
+#### Build and Deploy Workflow
+
+Build and deploy are independent operations. The user can request either one separately or both together via email instructions. The AI executes them as bash commands — no special jiny-M feature needed, just `system.md` instructions.
+
+**Build** (when instructed):
+```
+1. cd jiny-m && bun test           ← run tests first
+2. bun build --compile cli.ts      ← compile standalone binary
+   --outfile /tmp/jiny-m-new
+3. /tmp/jiny-m-new --version       ← verify build
+4. Report results to user
+```
+
+**Deploy** (when instructed):
+```
+1. Verify /tmp/jiny-m-new exists
+2. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+3. Reply "deploying, restarting..."
+4. s6-svc -r /run/service/jiny-m   ← trigger supervisor restart
+   → jiny-M stops
+   → supervisor restarts with new binary
+   → new jiny-M sends startup health check email
+   → user receives "started v0.1.6" email
+   → user continues conversation
+```
+
+**Build and Deploy** (when instructed):
+```
+Run Build steps, then Deploy steps in sequence.
+```
+
+### Deploy Restart Sequence
+
+```
+User email: "deploy the new release"
+  │
+  ▼
+AI (in OpenCode):
+  1. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+  2. Send reply: "deploying, restarting..."
+  3. s6-svc -r /run/service/jiny-m
+  │
+  ▼
+s6 supervisor detects jiny-M exit:
+  → restarts jiny-M with new binary
+  │
+  ▼
+New jiny-M starts:
+  → connects to IMAP/SMTP
+  → sends startup health check email
+  → resumes monitoring
+  │
+  ▼
+User receives:
+  1. Reply email: "deploying, restarting..."
+  2. Health check email: "jiny-M v0.1.6 started"
+  → user continues sending instructions
+```
+
+### Docker Setup
+
+**Dockerfile** (`docker/Dockerfile`):
+- Base: `oven/bun:latest`
+- Dev tools: git, ripgrep, jq, curl
+- s6-overlay for process supervision
+- OpenCode CLI
+- GitHub CLI (for PR workflow)
+- jiny-M compiled from source
+
+**Volume mounts** (config and workspace from host):
+```yaml
+services:
+  jiny-m:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ${JINY_CONFIG_DIR}:/opt/jiny-m/.jiny
+      - ${JINY_WORKSPACE_DIR}:/workspace
+    environment:
+      - OPENCODE_API_KEY
+      - GH_TOKEN
+    restart: unless-stopped
+```
+
+**s6 service** (`docker/s6-rc.d/jiny-m/run`):
+```bash
+#!/command/execlineb -P
+/usr/local/bin/jiny-m monitor --workdir /opt/jiny-m
+```
+
+### Example `system.md` for Bootstrapping
+
+```markdown
+You are developing the jiny-M project itself (bootstrapping).
+
+## Repository
+The jiny-M git repository should be at: ./jiny-m/
+If not yet cloned: git clone https://github.com/kingye/jiny-m.git
+
+## Development Workflow
+- Always create a feature branch: git checkout -b feat/<name>
+- After changes, run tests: cd jiny-m && bun test
+- Commit with clear messages describing what changed and why
+- Push and create PR when instructed
+
+## Build (when instructed)
+1. cd jiny-m && bun test
+2. bun build --compile cli.ts --outfile /tmp/jiny-m-new
+3. /tmp/jiny-m-new --version
+4. Report: version, binary size, test results
+
+## Deploy (when instructed)
+1. Verify /tmp/jiny-m-new exists
+2. Reply to confirm deployment is starting
+3. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
+4. s6-svc -r /run/service/jiny-m
+Note: jiny-M will restart. A startup health check email confirms readiness.
+
+## Build and Deploy (when instructed)
+Run Build steps, then Deploy steps in sequence.
+
+## References
+- See jiny-m/DESIGN.md for architecture and component responsibilities
+- See jiny-m/CHANGELOG.md for version history
+- See jiny-m/CLAUDE.md for coding conventions (use Bun, not Node)
+```
+
+### Files for Bootstrapping
+
+```
+docker/
+  Dockerfile                  # Full dev environment
+  docker-compose.yml          # Volume mounts, env vars
+  .env.example                # Template for secrets
+  s6-rc.d/
+    jiny-m/
+      type                    # "longrun"
+      run                     # Service run script
+  system.md.example           # Example system.md for bootstrapping
+```
+
+### Implementation Changes in jiny-M
+
+| # | Feature | File | Description |
+|---|---------|------|-------------|
+| 1 | `system.md` support | `src/services/opencode/prompt-builder.ts` | Read optional `<threadPath>/system.md`, append to system prompt |
+| 2 | Startup health check | `src/cli/commands/monitor.ts` | Send startup email via AlertService when monitor starts |
+| 3 | Docker setup | `docker/` | Dockerfile, s6 config, compose, examples |
