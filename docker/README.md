@@ -283,9 +283,13 @@ podman run --rm --entrypoint="" jiny-m:latest cat /root/.config/opencode/opencod
 
 ### Connecting to a local model (Ollama, vLLM, etc.)
 
-If you run a local model server on the host machine, the container can't reach it via `localhost`. Use `host.containers.internal` (podman) or `host.docker.internal` (docker) instead.
+If you run a local model server on the host machine (e.g., Ollama on `localhost:11434`), the container can't reach it via `localhost` — that refers to the container itself.
 
-In your `opencode.jsonc`:
+**On macOS with Podman Machine (Apple Silicon / Intel):**
+
+Both `host.containers.internal` and `host.docker.internal` resolve automatically to the host machine (`192.168.127.254`) — no extra flags needed. This works because podman machine uses Apple Hypervisor with `UserModeNetworking: true`.
+
+In your `opencode.jsonc`, replace `localhost` with `host.containers.internal`:
 
 ```jsonc
 {
@@ -297,14 +301,39 @@ In your `opencode.jsonc`:
 }
 ```
 
-On macOS with podman machine, `host.containers.internal` resolves automatically. On Linux, you may need:
+Verify it works:
 
 ```bash
-podman run --add-host=host.containers.internal:host-gateway ...
+# Check DNS resolution from inside the container
+podman run --rm --entrypoint="" jiny-m:latest \
+  bash -c "getent hosts host.containers.internal"
+# Expected: 192.168.127.254  host.containers.internal
+
+# Test connectivity to your local model
+podman run --rm --entrypoint="" jiny-m:latest \
+  curl -s http://host.containers.internal:11434/api/version
 ```
 
-Or use `--network=host` to share the host's network directly (then `localhost` works):
+**On Linux with Podman:**
+
+Add `--add-host` when running the container:
 
 ```bash
-podman run --network=host ...
+podman run -d --name jiny-m \
+  --add-host=host.containers.internal:host-gateway \
+  -v ... \
+  jiny-m:latest
 ```
+
+**Alternative: `--network=host`**
+
+Shares the host's network stack directly — `localhost` inside the container reaches the host:
+
+```bash
+podman run -d --name jiny-m \
+  --network=host \
+  -v ... \
+  jiny-m:latest
+```
+
+Note: with `--network=host`, the container has full access to all host ports. Use with caution.
