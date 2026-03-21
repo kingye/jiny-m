@@ -16,17 +16,19 @@ Prepare these on your host machine before starting:
 your-project/
   .jiny/
     config.json        # jiny-M config (IMAP/SMTP, patterns, alerting)
+  .env.jiny            # Secrets for config.json ${VAR} substitution
   workspace/           # jiny-M workspace (thread dirs, messages)
   opencode.jsonc       # OpenCode global config (API keys, providers)
 ```
 
 ## Volume Mounts
 
-The container mounts three paths from the host:
+The container mounts four paths from the host:
 
 | Host path | Container path | Purpose |
 |-----------|---------------|---------|
-| `.jiny/config.json` | `/opt/jiny-m/.jiny/config.json` | jiny-M configuration (email accounts, patterns, alerting) |
+| `.jiny/` | `/opt/jiny-m/.jiny/` | jiny-M configuration |
+| `.env.jiny` | `/opt/jiny-m/.env` | Secrets — Bun auto-loads, ConfigManager substitutes `${VAR}` in config.json |
 | `workspace/` | `/workspace/` | Thread directories, messages, reply history |
 | `opencode.jsonc` | `/root/.config/opencode/opencode.jsonc` | OpenCode AI config (API keys, providers, model settings) |
 
@@ -54,7 +56,7 @@ podman build \
 mkdir -p my-jiny/.jiny my-jiny/workspace
 ```
 
-Create `my-jiny/.jiny/config.json`:
+Create `my-jiny/.jiny/config.json` (secrets use `${VAR}` — resolved from `.env`):
 
 ```json
 {
@@ -63,14 +65,14 @@ Create `my-jiny/.jiny/config.json`:
       "inbound": {
         "host": "imap.example.com",
         "port": 993,
-        "username": "your-email@example.com",
-        "password": "your-password"
+        "username": "${EMAIL_USER}",
+        "password": "${EMAIL_PASSWORD}"
       },
       "outbound": {
         "host": "smtp.example.com",
         "port": 465,
-        "username": "your-email@example.com",
-        "password": "your-password"
+        "username": "${EMAIL_USER}",
+        "password": "${EMAIL_PASSWORD}"
       }
     }
   },
@@ -104,6 +106,13 @@ Create `my-jiny/.jiny/config.json`:
 }
 ```
 
+Create `my-jiny/.env.jiny` with the actual secrets:
+
+```env
+EMAIL_USER=your-email@example.com
+EMAIL_PASSWORD=your-app-password
+```
+
 Copy or symlink your `opencode.jsonc`:
 
 ```bash
@@ -115,6 +124,7 @@ cp ~/.config/opencode/opencode.jsonc my-jiny/opencode.jsonc
 ```bash
 podman run -d --name jiny-m \
   -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
+  -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
   -v $(pwd)/my-jiny/workspace:/workspace \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   jiny-m:latest
