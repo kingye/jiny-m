@@ -5,21 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - 2026-03-22
-
-### Fixed
-- **Question tool now properly denied**: Changed from `tools: { question: false }` (ignored by OpenCode) to `permission: { question: "deny" }` (the correct OpenCode config syntax)
-- **OpenCode server restart on model switch**: When `/model` command changes the model, the OpenCode server is restarted so the new model config takes effect
-- **Command-only emails**: When email body contains only commands (e.g., `/model ...`), injects a system note telling the AI to confirm results and stop, preventing it from exploring the codebase
-- **Activity timeouts increased**: Base timeout 2min→5min, tool timeout 5min→10min (sub-agents/task tool need more time)
-- **Docker build**: Added `.dockerignore` to exclude `workspace/`, `bootstrapping/`, `.channels/` from build context (permission denied on `.bun-build` files)
-
-### Changed
-- Removed dead code: `attachment-commands.ts` (unused since command handler refactor)
-
-### Tests
-- Added 10 model ID preservation tests verifying no truncation at dots (e.g., `DeepSeek-V3.2` survives full round-trip)
-
 ## [0.2.3] - 2026-03-22
 
 ### Fixed
@@ -39,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **AI token tampering**: Stronger system prompt prohibits decoding/modifying the opaque base64 token
 - **Reply tool errors**: Clear error messages when token appears modified
+
+## [0.2.1] - 2026-03-22
+
+### Fixed
+- **Question tool now properly denied**: Changed from `tools: { question: false }` (ignored by OpenCode) to `permission: { question: "deny" }` (the correct OpenCode config syntax)
+- **OpenCode server restart on model switch**: When `/model` command changes the model, the OpenCode server is restarted so the new model config takes effect
+- **Command-only emails**: When email body contains only commands (e.g., `/model ...`), injects a system note telling the AI to confirm results and stop, preventing it from exploring the codebase
+- **Activity timeouts increased**: Base timeout 2min→5min, tool timeout 5min→10min (sub-agents/task tool need more time)
+- **Docker build**: Added `.dockerignore` to exclude `workspace/`, `bootstrapping/`, `.channels/` from build context (permission denied on `.bun-build` files)
+
+### Changed
+- Removed dead code: `attachment-commands.ts` (unused since command handler refactor)
+
+### Tests
+- Added 10 model ID preservation tests verifying no truncation at dots (e.g., `DeepSeek-V3.2` survives full round-trip)
 
 ## [0.2.0] - 2026-03-21
 
