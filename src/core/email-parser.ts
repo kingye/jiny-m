@@ -291,7 +291,7 @@ export function cleanEmailBody(text: string): string {
  * Parse a stored markdown message (received.md) into its components.
  * Returns null if the format is invalid.
  */
-export function parseStoredMessage(mdContent: string): { sender: string; timestamp: Date; topic: string; body: string } | null {
+export function parseStoredMessage(mdContent: string): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
   const lines = mdContent.split('\n');
   let inFrontmatter = false;
   let pastFrontmatter = false;
@@ -369,8 +369,8 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
   }
 
   const topic = frontmatter.topic || '';
-  const body = bodyLines.join('\n').trim();
-  return { sender, timestamp, topic, body };
+  const bodyText = bodyLines.join('\n').trim();
+  return { sender, timestamp, topic, bodyText };
 }
 
 /**

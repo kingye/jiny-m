@@ -104,9 +104,10 @@ export class SmtpService {
   sendReply(options: ReplyOptions): Promise<string> {
     return this.sendReplyInternal(options).catch(async (err) => {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      const isConnectionError = errorMessage.toLowerCase().includes('connection') ||
-                                errorMessage.toLowerCase().includes('econn') ||
-                                errorMessage.toLowerCase().includes('timeout');
+      const lowerMsg = errorMessage.toLowerCase();
+      const isConnectionError = lowerMsg.includes('connect') ||
+                                lowerMsg.includes('econn') ||
+                                lowerMsg.includes('timeout');
 
       if (!isConnectionError) {
         throw err;
@@ -132,9 +133,10 @@ export class SmtpService {
   sendMail(options: MailOptions): Promise<string> {
     return this.sendMailInternal(options).catch(async (err) => {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      const isConnectionError = errorMessage.toLowerCase().includes('connection') ||
-                                errorMessage.toLowerCase().includes('econn') ||
-                                errorMessage.toLowerCase().includes('timeout');
+      const lowerMsg = errorMessage.toLowerCase();
+      const isConnectionError = lowerMsg.includes('connect') ||
+                                lowerMsg.includes('econn') ||
+                                lowerMsg.includes('timeout');
 
       if (!isConnectionError) {
         throw err;
