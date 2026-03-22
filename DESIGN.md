@@ -169,6 +169,8 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
 - Does NOT build quoted history, does NOT clean or transform content
 - Just a transport tool that converts format and sends
+- **Auto-reconnect**: `sendReply()` and `sendMail()` wrap their internal send with a one-retry-on-connection-error pattern. If the error message (lowercased) contains `"connect"`, `"econn"`, or `"timeout"`, the service calls `reconnect()` (disconnect + connect) and retries once. Other errors are thrown immediately.
+- **Shared instance**: A single `SmtpService` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, MCP reply tool (creates its own instance), and AlertService. The adapter stays connected for the process lifetime — consumers must not call `disconnect()` after individual sends.
 
 **ReplyContext** (base64 opaque token)
 - Metadata-only: contains channel type, sender, recipient, subject, `incomingMessageDir`, threading IDs
@@ -569,9 +571,11 @@ Stale session detection:
     → Delete session file, create new session, retry prompt once
        ↓
 If tool NOT used → ThreadManager fallback:
-  → Get OutboundAdapter for message.channel
+  → Get OutboundAdapter for message.channel (shared instance, already connected)
   → adapter.sendReply(message, replyText, attachments)
   → storage.storeReply()
+  Note: adapter is NOT disconnected after send — it is a shared, long-lived
+  resource managed at the monitor lifecycle level (see SmtpService notes above)
        ↓
 Worker picks next message from thread queue
 ```
@@ -765,7 +769,7 @@ MCP Server (stdio subprocess, cwd = thread dir):
 - **Fallback**: If historical reading fails, falls back to single-message quoting with `formatQuotedReply()`
 
 **Implementation** (`src/core/email-parser.ts`):
-- `parseStoredMessage()` extracts sender, timestamp, topic, body from stored `received.md` frontmatter
+- `parseStoredMessage()` extracts sender, timestamp, topic, bodyText from stored `received.md` frontmatter
 - `prepareBodyForQuoting(threadPath, currentMessage, maxHistory?, excludeMessageDir?)` orchestrates the collection and formatting
 - `formatQuotedReply(sender, timestamp, subject, bodyText)` formats a single message as a quoted markdown block
 
@@ -1462,7 +1466,7 @@ interface HealthCheckConfig {
 6. On shutdown (SIGINT/SIGTERM): alertService.stop() flushes pending errors
 ```
 
-The AlertService requires the email outbound adapter to be connected. If SMTP connection fails, alerting is skipped with a warning.
+The AlertService requires the email outbound adapter to be connected. It shares the same `EmailOutboundAdapter` instance registered in the `ChannelRegistry` with ThreadManager's fallback/direct reply paths. The adapter is connected once at monitor startup and stays connected for the process lifetime — AlertService does not manage the connection lifecycle itself. If SMTP connection fails at startup, alerting is skipped with a warning. If the connection drops later, `SmtpService.sendMail()`'s auto-reconnect handles recovery transparently.
 
 ## Bootstrapping: Using jiny-M to Develop jiny-M
 
