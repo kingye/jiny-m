@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 - Added 10 model ID preservation tests verifying no truncation at dots (e.g., `DeepSeek-V3.2` survives full round-trip)
 
+## [0.2.3] - 2026-03-22
+
+### Fixed
+- **Quoted history crash**: `parseStoredMessage()` returned `{ body }` but consumers expected `{ bodyText }`, causing `"undefined is not an object (evaluating 'bodyText.trim')"` when quoting historical messages
+- **SMTP auto-reconnect not triggering**: Error string matching checked for `"connection"` but the disconnected-transporter error contains `"connected"` — broadened to match `"connect"` so auto-reconnect fires correctly
+- **AlertService SMTP failure**: `sendFallbackReply()` and `sendDirectReply()` disconnected the shared SMTP adapter in their `finally` block, leaving AlertService unable to send digest emails; removed per-send connect/disconnect since the adapter is managed at the monitor lifecycle level
+
 ## [0.2.2] - 2026-03-22
 
 ### Added
