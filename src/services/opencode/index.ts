@@ -234,11 +234,13 @@ export class OpenCodeService {
     // Returns true if a new config was written (meaning existing sessions won't have the tool).
     const configFreshlyWritten = await this.ensureThreadOpencodeSetup(threadPath);
 
-    // If the MCP config was just written, any existing session was created without
-    // the tool. Force a new session so it picks up the MCP config.
+    // If the MCP config was just written (model changed, tool path changed, etc.),
+    // restart the OpenCode server so it picks up the new config, then create a new session.
     let session: ThreadSession;
     if (configFreshlyWritten) {
-      logger.info('MCP config freshly written, creating new session to pick up tool', { threadPath });
+      logger.info('OpenCode config changed, restarting server and creating new session', { threadPath });
+      await this.close(); // Stop old server
+      await this.ensureServerStarted(); // Start fresh server with new config
       session = await this.createNewSession(threadPath);
     } else {
       session = await this.getOrCreateSession(threadPath);
