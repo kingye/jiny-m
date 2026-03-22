@@ -1127,6 +1127,8 @@ Users can include commands in email messages using `/command` syntax. Commands a
 | `/model <id>` | Switch AI model for this thread | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
 | `/model` | List available models | `/model` |
 | `/model reset` | Reset to default model from config | `/model reset` |
+| `/plan` | Switch to plan mode (read-only, enforced by OpenCode) | `/plan` |
+| `/build` | Switch to build mode (full execution, default) | `/build` |
 
 ### Architecture
 
@@ -1172,6 +1174,21 @@ The `/model` command writes the model ID to `.jiny/model-override` in the thread
 ```
 
 `ensureThreadOpencodeSetup()` reads the override file and uses it over the config default via `readModelOverride(threadPath)`.
+
+### Plan/Build Mode
+
+The `/plan` and `/build` commands switch between OpenCode's built-in plan mode (read-only, tool-level enforcement) and build mode (full execution).
+
+- **Plan mode**: OpenCode enforces read-only at the tool level — the AI literally cannot edit files or run modifying commands. This is NOT a prompt-based suggestion; it's a hard constraint.
+- **Build mode**: Default. Full execution — AI can edit files, run tests, commit, etc.
+
+```
+<threadPath>/.jiny/
+  mode-override      ← contains "plan" when plan mode active
+                       file absent = build mode (default)
+```
+
+When `promptWithProgress()` sends the prompt to OpenCode, it reads `mode-override` via `readModeOverride(threadPath)`. If plan mode is active, it passes `agent: "plan"` to `promptAsync()`. OpenCode then enforces read-only at the tool level for that prompt.
 
 ### Command Processing Flow (in `thread-manager.ts`)
 
@@ -1485,15 +1502,9 @@ If a `system.md` file exists in a thread directory, its content is appended to t
 
 This is a generic feature — not limited to bootstrapping. Any thread can have a `system.md` for domain-specific instructions (e.g., "you are a support agent for product X", "you are a code reviewer for repo Y").
 
-#### Plan/Build Mode Detection
+#### Plan/Build Mode
 
-The general system prompt (all threads) includes mode detection from the user's message keywords:
-
-- **Plan mode** (plan/计划/analyze/分析/design/设计/review/审查): Read-only — AI only reads, searches, and thinks. Outputs analysis and plan, asks user to confirm before executing.
-- **Build mode** (implement/实现/build/构建/fix/修复/create/创建/deploy/部署): Full execution — AI edits files, runs tests, commits, etc.
-- **If unclear**: Defaults to plan mode. Presents plan and asks for confirmation.
-
-This is part of the general system prompt in `PromptBuilder.buildSystemPrompt()`, not in `system.md`. Supports both English and Chinese keywords.
+Plan/build mode is controlled via email commands (`/plan`, `/build`), not prompt-based keyword detection. OpenCode enforces plan mode at the tool level — the AI cannot edit files or run modifying commands when plan mode is active. See the [Email Command System](#email-command-system) section for details.
 
 #### Headless Mode (Disabled Interactive Tools)
 
@@ -1685,7 +1696,7 @@ docker/
 | # | Feature | File | Description |
 |---|---------|------|-------------|
 | 1 | `system.md` support | `src/services/opencode/prompt-builder.ts` | Read optional `<threadPath>/system.md`, append to system prompt |
-| 2 | Plan/Build modes | `src/services/opencode/prompt-builder.ts` | Mode detection from user keywords (EN + CN) in general system prompt |
+| 2 | Plan/Build modes | `src/core/command-handler/handlers/ModeCommandHandler.ts` | `/plan` and `/build` commands, mode-override file, OpenCode agent enforcement |
 | 3 | Deny `question` tool | `src/services/opencode/index.ts` | `permission: { "question": "deny" }` in opencode.json (headless mode) |
 | 4 | Compiled reply-tool binary | `docker/Dockerfile` | `bun build --compile src/mcp/reply-tool.ts` alongside main binary |
 | 5 | Common path fallback | `src/services/opencode/index.ts` | `getReplyToolCommand()` checks `/usr/local/bin/` for compiled binary |

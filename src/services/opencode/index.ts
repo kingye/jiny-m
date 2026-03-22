@@ -6,6 +6,7 @@ import type { OpenCodeConfig, ThreadSession, AiGeneratedReply, GeneratedFile, In
 import { logger } from '../../core/logger';
 import { PromptBuilder } from './prompt-builder';
 import { readModelOverride } from '../../core/command-handler/handlers/ModelCommandHandler';
+import { readModeOverride } from '../../core/command-handler/handlers/ModeCommandHandler';
 
 type OpenCodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -491,12 +492,15 @@ export class OpenCodeService {
     }
 
     // Fire the prompt asynchronously (returns immediately with HTTP 204)
+    // If plan mode is active, pass agent: "plan" to OpenCode (enforces read-only at tool level)
+    const modeOverride = await readModeOverride(threadPath);
     try {
       await this.client.session.promptAsync({
         path: { id: sessionId },
         query: { directory: threadPath },
         body: {
           system: systemPrompt,
+          ...(modeOverride === 'plan' ? { agent: 'plan' } : {}),
           parts: [{ type: 'text', text: prompt }],
         },
       });
@@ -505,7 +509,7 @@ export class OpenCodeService {
       throw error;
     }
 
-    logger.info('Prompt sent (async), waiting for events...', { sessionId });
+    logger.info('Prompt sent (async), waiting for events...', { sessionId, ...(modeOverride ? { mode: modeOverride } : {}) });
 
     // State for the event loop
     const accumulatedParts: Array<any> = [];
