@@ -711,6 +711,7 @@ interface ReplyContext {
   externalId?: string;               // Email: Message-ID; FeiShu: msg_id
   threadRefs?: string[];             // Email: References; FeiShu: thread_id
   uid: string;                       // Channel-specific UID
+  _nonce?: string;                   // Integrity nonce — must be present in token.
   channelMetadata?: Record<string, any>;
   // Email: { inReplyTo, from }
   // FeiShu: { chatId, messageType, ... }
@@ -720,6 +721,14 @@ interface ReplyContext {
 **Serialization helpers:**
 - `serializeContext(message, threadName, incomingMessageDir?)` → base64-encoded string (JSON → base64)
 - `deserializeContext(encoded)` → validated `ReplyContext` (base64 → JSON → validate required fields)
+
+### Token Integrity Validation
+
+To prevent AI tampering with the opaque token, the system now includes integrity checks:
+
+- **Nonce field**: `serializeContext()` adds a `_nonce` field (timestamp + random suffix). Missing nonce in older tokens is tolerated but logged.
+- **Formatting detection**: `deserializeContext()` scans string fields for backticks (`` ` ``), escaped newlines (`\\n`), and escaped quotes (`\\\"`). If found, validation rejects the token with a clear error: "token appears modified … DO NOT decode or modify the token."
+- **Stronger system prompt**: The AI receives explicit instructions not to decode, modify, re‑encode, or add any formatting to the token.
 
 ### MCP Tool: `reply_message`
 
