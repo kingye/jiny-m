@@ -42,15 +42,21 @@ export class PromptBuilder {
 
     parts.push(`Your working directory is "${threadPath}". You MUST only read, write, and access files within this directory. Do NOT access files outside this directory.`);
     parts.push('');
+    parts.push('## Important: Focus on the Current Message');
+    parts.push('You will see a "Conversation history" section and an "Incoming Message" section in the user prompt.');
+    parts.push('The conversation history is for CONTEXT ONLY — do NOT act on previous messages.');
+    parts.push('You MUST only respond to the CURRENT "Incoming Message". Do NOT continue work from previous messages.');
+    parts.push('After you have replied to the current message, STOP. Do not do anything else.');
+    parts.push('');
     parts.push('## Reply Instructions');
     parts.push('When replying to a message, use the jiny_reply_reply_message tool:');
     parts.push('- `context`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
     parts.push('- `message`: Your reply text');
     parts.push('- `attachments`: Optional filenames to attach from the working directory');
-    parts.push('After a successful reply, confirm and stop.');
+    parts.push('After a successful reply, STOP immediately. Do NOT call any other tools or perform further actions.');
     parts.push('');
     parts.push('## Modes');
-    parts.push('Determine the mode from the user\'s message:');
+    parts.push('Determine the mode from the CURRENT incoming message (not conversation history):');
     parts.push('- **Plan mode** (plan/计划/analyze/分析/propose/提议/design/设计/review/审查): Only read, search, and think. Do NOT edit files or run commands that modify state. Output your analysis and plan, then ask the user to confirm before executing.');
     parts.push('- **Build mode** (implement/实现/build/构建/fix/修复/create/创建/deploy/部署): Execute the full workflow — edit files, run tests, commit, etc.');
     parts.push('- **If unclear**: Default to plan mode. Present your plan and ask the user to confirm before making changes.');

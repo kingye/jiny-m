@@ -688,14 +688,6 @@ export class OpenCodeService {
                     logger.info('Reply MCP tool completed successfully (detected via SSE)', {
                       tool: part.tool,
                     });
-                    // Reply sent — stop waiting for more AI steps.
-                    // The AI may continue working (editing files, running commands)
-                    // but we already have the reply. Force-close the SSE stream.
-                    done = true;
-                    logger.info('Reply sent, closing SSE stream');
-                    if (sseStream) {
-                      try { sseStream.return(undefined); } catch { /* ignore */ }
-                    }
                   }
                 } else if (toolStatus === 'error') {
                   logger.error('Reply tool call failed', {
