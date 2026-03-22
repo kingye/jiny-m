@@ -1,6 +1,10 @@
 import type { Email, Attachment } from '../types';
 import * as mailparser from 'mailparser';
 import { stripReplyPrefix } from '../utils/helpers';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+const MAX_HISTORY_QUOTE = 5;
 
 /**
  * Derive a thread name from the subject by stripping Re:/Fwd: and optional additional prefixes.
@@ -281,6 +285,158 @@ export function cleanEmailBody(text: string): string {
       );
     })
     .join('\n');
+}
+
+/**
+ * Parse a stored markdown message (received.md) into its components.
+ * Returns null if the format is invalid.
+ */
+export function parseStoredMessage(mdContent: string): { sender: string; timestamp: Date; topic: string; body: string } | null {
+  const lines = mdContent.split('\n');
+  let inFrontmatter = false;
+  let pastFrontmatter = false;
+  const frontmatter: Record<string, string> = {};
+  let headerLine = '';
+  const bodyLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimEnd();
+
+    if (!pastFrontmatter) {
+      if (trimmed === '---') {
+        if (inFrontmatter) {
+          pastFrontmatter = true;
+          inFrontmatter = false;
+        } else {
+          inFrontmatter = true;
+        }
+        continue;
+      }
+      if (inFrontmatter) {
+        const match = /^(\w+):\s*(.+)$/.exec(trimmed);
+        if (match) {
+          const key = match[1];
+          let value = match[2];
+          // Remove surrounding quotes if present
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.substring(1, value.length - 1);
+          }
+          frontmatter[key] = value;
+        }
+      }
+      continue;
+    }
+
+    // After frontmatter, look for header line
+    if (!headerLine) {
+      if (trimmed.startsWith('## ') && /\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+        headerLine = trimmed;
+        continue;
+      }
+      // Skip lines until header found
+      continue;
+    }
+
+    // After header, collect body lines until closing separator
+    if (trimmed === '---' || trimmed === '--- ') {
+      break;
+    }
+    bodyLines.push(line);
+  }
+
+  if (!headerLine) {
+    return null;
+  }
+
+  // Extract sender from header line: "## SenderName (HH:MM AM/PM)"
+  const senderMatch = headerLine.match(/^##\s+(.+?)\s+\(/);
+  const sender = senderMatch ? senderMatch[1].trim() : 'Unknown';
+
+  // Parse timestamp from frontmatter (ISO string) or default to current date
+  let timestamp: Date;
+  if (frontmatter.timestamp) {
+    try {
+      timestamp = new Date(frontmatter.timestamp);
+      if (isNaN(timestamp.getTime())) {
+        timestamp = new Date();
+      }
+    } catch {
+      timestamp = new Date();
+    }
+  } else {
+    timestamp = new Date();
+  }
+
+  const topic = frontmatter.topic || '';
+  const body = bodyLines.join('\n').trim();
+  return { sender, timestamp, topic, body };
+}
+
+/**
+ * Prepare quoted history for a reply, combining the current message with recent historical messages.
+ * Reads stored messages from the thread's messages/ directory, sorts by timestamp (descending),
+ * includes up to maxHistory messages (default MAX_HISTORY_QUOTE).
+ * Each message is formatted as a quoted block using formatQuotedReply.
+ * The current message (the one being replied to) is included as the first (most recent) quoted block.
+ * Returns the combined quoted history string, empty if no messages.
+ */
+export async function prepareBodyForQuoting(
+  threadPath: string,
+  currentMessage: { sender: string; timestamp: Date; topic: string; bodyText: string },
+  maxHistory?: number,
+  excludeMessageDir?: string,
+): Promise<string> {
+  const limit = maxHistory ?? MAX_HISTORY_QUOTE;
+  const messagesDir = join(threadPath, 'messages');
+  let storedMessages: Array<{ sender: string; timestamp: Date; topic: string; bodyText: string }> = [];
+
+  try {
+    const entries = await readdir(messagesDir, { withFileTypes: true });
+    let dirNames = entries
+      .filter(dirent => dirent.isDirectory())
+      .filter(dirent => !dirent.name.startsWith('.'))
+      .map(dirent => dirent.name)
+      .sort()
+      .reverse(); // most recent first
+
+    if (excludeMessageDir) {
+      dirNames = dirNames.filter(name => name !== excludeMessageDir);
+    } else {
+      // Assume the most recent directory is the current message, skip it
+      dirNames = dirNames.slice(1);
+    }
+    // Take up to limit - 1 historical messages (excluding current)
+    dirNames = dirNames.slice(0, limit - 1);
+
+    for (const dirName of dirNames) {
+      const receivedPath = join(messagesDir, dirName, 'received.md');
+      try {
+        const content = await readFile(receivedPath, 'utf-8');
+        const parsed = parseStoredMessage(content);
+        if (parsed) {
+          storedMessages.push(parsed);
+        }
+      } catch {
+        // skip missing or unreadable files
+      }
+    }
+  } catch {
+    // If messages/ directory doesn't exist, fallback to legacy .jiny/ or empty
+  }
+
+  // Start with current message (most recent)
+  const allMessages = [currentMessage, ...storedMessages].slice(0, limit);
+  const quotedBlocks: string[] = [];
+
+  for (const msg of allMessages) {
+    const quoted = formatQuotedReply(msg.sender, msg.timestamp, msg.topic, msg.bodyText);
+    if (quoted) {
+      quotedBlocks.push(quoted);
+    }
+  }
+
+  return quotedBlocks.join('\n\n');
 }
 
 /**

@@ -54,6 +54,8 @@ function messageToMarkdown(message: InboundMessage): string {
   lines.push('---');
   lines.push(`channel: ${message.channel}`);
   lines.push(`uid: "${message.channelUid}"`);
+  lines.push(`topic: ${JSON.stringify(message.topic)}`);
+  lines.push(`timestamp: ${JSON.stringify(message.timestamp.toISOString())}`);
   if (message.externalId) {
     lines.push(`external_id: "${message.externalId}"`);
   }
