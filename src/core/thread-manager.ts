@@ -314,13 +314,8 @@ export class ThreadManager {
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
-      await adapter.connect();
-      try {
-        await adapter.sendReply(message, fullReplyText);
-        logger.info('Fallback reply sent', { channel: message.channel });
-      } finally {
-        await adapter.disconnect().catch(() => {});
-      }
+      await adapter.sendReply(message, fullReplyText);
+      logger.info('Fallback reply sent', { channel: message.channel });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Failed to send fallback reply', { channel: message.channel, error: msg });
@@ -343,13 +338,8 @@ export class ThreadManager {
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
-      await adapter.connect();
-      try {
-        await adapter.sendReply(message, fullReplyText);
-        logger.info('Direct reply sent', { channel: message.channel });
-      } finally {
-        await adapter.disconnect().catch(() => {});
-      }
+      await adapter.sendReply(message, fullReplyText);
+      logger.info('Direct reply sent', { channel: message.channel });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Failed to send direct reply', { channel: message.channel, error: msg });
