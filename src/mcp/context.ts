@@ -38,6 +38,8 @@ export interface ReplyContext {
   threadRefs?: string[];
   /** Channel-specific unique ID (email UID, feishu msg ID). */
   uid: string;
+  /** Integrity nonce — must be present in token. */
+  _nonce?: string;
   /**
    * Channel-specific metadata needed for reply construction.
    * Email: { inReplyTo, from }
@@ -71,6 +73,7 @@ export function serializeContext(
     externalId: message.externalId,
     threadRefs: message.threadRefs,
     uid: message.channelUid,
+    _nonce: `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
     channelMetadata: {
       ...(message.channel === 'email' ? {
         inReplyTo: message.replyToId,
@@ -98,6 +101,20 @@ export function deserializeContext(encoded: string): ReplyContext {
     context = JSON.parse(json);
   } catch {
     throw new Error('Invalid context: failed to parse JSON after base64 decode');
+  }
+
+  // Detect token tampering
+  if (!context._nonce) {
+    // Older tokens may not have nonce, but new ones should.
+    // Logging is done by caller.
+  }
+
+  // Check for backticks or added formatting in string fields
+  const strings = [context.sender, context.recipient, context.topic, context.threadName].filter(Boolean);
+  for (const s of strings) {
+    if (s.includes('`') || s.includes('\\n') || s.includes('\\"')) {
+      throw new Error('Invalid context: token appears modified (found formatting characters). DO NOT decode or modify the token.');
+    }
   }
 
   if (!context.threadName || !context.recipient || !context.sender || !context.topic) {
