@@ -176,4 +176,76 @@ describe('Command Handler System', () => {
       expect(result).toBe('test/model-id');
     });
   });
+
+  describe('Model ID preservation (no truncation)', () => {
+    const MODEL_IDS = [
+      'SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2',
+      'SiliconFlow/Pro/zai-org/GLM-4.7',
+      'SiliconFlow/Pro/MiniMaxAI/MiniMax-M2.5',
+      'anthropic/claude-opus-4-6',
+      'anthropic/claude-sonnet-4-6',
+      'anthropic/claude-haiku-4-5',
+      'openai/gpt-4.1-2025-04-14',
+      'provider/model-with.many.dots.v1.2.3',
+    ];
+
+    const makeContext = (args: string[]) => ({
+      email: { id: 'test', from: 'test@test.com', subject: 'Test' },
+      threadPath: tempDir,
+      config: { maxFileSize: '25mb', allowedExtensions: [] },
+      args,
+    });
+
+    for (const modelId of MODEL_IDS) {
+      test(`full round-trip preserves "${modelId}"`, async () => {
+        const registry = new CommandRegistry();
+
+        // Step 1: Parse from email text
+        const text = `/model ${modelId}\n\nDo something.`;
+        const commands = registry.parseCommands(text);
+        expect(commands.length).toBe(1);
+        expect(commands[0]?.args).toEqual([modelId]);
+
+        // Step 2: Execute command → write override file
+        const handler = registry.get('/model')!;
+        const result = await handler.execute(makeContext([modelId]));
+        expect(result.success).toBe(true);
+
+        // Step 3: Read override file → verify exact match
+        const { readModelOverride } = await import('../handlers/ModelCommandHandler');
+        const override = await readModelOverride(tempDir);
+        expect(override).toBe(modelId);
+
+        // Step 4: Verify no truncation at dots
+        if (modelId.includes('.')) {
+          const lastDotIndex = modelId.lastIndexOf('.');
+          const afterDot = modelId.substring(lastDotIndex);
+          expect(override).toContain(afterDot);
+        }
+      });
+    }
+
+    test('command parsing does not split on dots or slashes', () => {
+      const registry = new CommandRegistry();
+      const text = '/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2';
+      const commands = registry.parseCommands(text);
+
+      // Must be a single arg, not split on / or .
+      expect(commands[0]?.args.length).toBe(1);
+      expect(commands[0]?.args[0]).toBe('SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2');
+    });
+
+    test('model ID with version suffix survives JSON round-trip', async () => {
+      const modelId = 'SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2';
+
+      // Simulate what ensureThreadOpencodeSetup does
+      const config = { model: modelId };
+      const json = JSON.stringify(config);
+      const parsed = JSON.parse(json);
+
+      expect(parsed.model).toBe(modelId);
+      expect(parsed.model).toContain('.2');
+      expect(parsed.model).not.toBe('SiliconFlow/Pro/deepseek-ai/DeepSeek-V3');
+    });
+  });
 });
