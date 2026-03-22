@@ -511,12 +511,15 @@ MessageStorage.store(msg, threadName)
   → returns { messageDir, threadPath }
        ↓
 ensureThreadOpencodeSetup(threadPath)
+   → reads .jiny/model-override (if exists, takes priority over config)
    → writes opencode.json with:
-     - model + small_model from config
+     - model from override or config
      - MCP config: jiny_reply server
      - permission: { "*": "allow" }
      - tools: { question: false } (headless mode)
    → staleness check: rewrites if model, tool path, JINY_ROOT, or tools changed
+   → if config changed: restart OpenCode server + create new session
+     (server caches model from opencode.json at startup — must restart to switch)
        ↓
 OpenCodeService.generateReply(msg, threadPath, messageDir)
        ↓
@@ -776,7 +779,7 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 **Disabled tools:**
 - `question: false` — jiny-M runs headless via email, no interactive terminal. The `question` tool would hang indefinitely.
 
-**Staleness check**: Rewrites `opencode.json` if model, tool path, JINY_ROOT, or `tools.question` changed.
+**Staleness check**: Rewrites `opencode.json` if model, tool path, JINY_ROOT, or `tools.question` changed. When config changes, the OpenCode server is restarted (server caches model at startup) and a new session is created.
 ```
 
 - `model` and `small_model` from jiny-m config (`reply.opencode.model` / `reply.opencode.smallModel`)
@@ -1150,6 +1153,11 @@ ensureThreadOpencodeSetup()
   → reads .jiny/model-override
   → uses override model instead of config default
   → writes opencode.json with override model
+  → detects config changed → restarts OpenCode server
+  │
+  ▼
+New OpenCode server starts (reads updated opencode.json)
+  → creates new session with new model
   │
   ▼
 AI processes with new model
