@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 - Added 10 model ID preservation tests verifying no truncation at dots (e.g., `DeepSeek-V3.2` survives full round-trip)
 
+## [0.2.2] - 2026-03-22
+
+### Added
+- **Historical message quoting**: `prepareBodyForQuoting()` includes up to 5 recent messages in replies, with fallback to single‑message quoting
+- **Token integrity validation**: `_nonce` field detects AI tampering; validation rejects tokens containing backticks, escaped newlines, quotes
+
+### Fixed
+- **AI token tampering**: Stronger system prompt prohibits decoding/modifying the opaque base64 token
+- **Reply tool errors**: Clear error messages when token appears modified
+
 ## [0.2.0] - 2026-03-21
 
 ### Added
