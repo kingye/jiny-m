@@ -10,26 +10,24 @@ Run jiny-M in a container with all dev tools for bootstrapping (self-development
 
 ## Directory Structure
 
-Prepare these on your host machine before starting:
+Prepare a single data directory on your host machine before starting:
 
 ```
-your-project/
+my-jiny/
   .jiny/
     config.json        # jiny-M config (IMAP/SMTP, patterns, alerting)
-  .env.jiny            # Secrets for config.json ${VAR} substitution
+  .env                 # Secrets for config.json ${VAR} substitution
   workspace/           # jiny-M workspace (thread dirs, messages)
-  opencode.jsonc       # OpenCode global config (API keys, providers)
+opencode.jsonc         # OpenCode global config (API keys, providers)
 ```
 
 ## Volume Mounts
 
-The container mounts four paths from the host:
+The container uses two volume mounts:
 
 | Host path | Container path | Purpose |
 |-----------|---------------|---------|
-| `.jiny/` | `/opt/jiny-m/.jiny/` | jiny-M configuration |
-| `.env.jiny` | `/opt/jiny-m/.env` | Secrets — Bun auto-loads, ConfigManager substitutes `${VAR}` in config.json |
-| `workspace/` | `/opt/jiny-m/workspace/` | Thread directories, messages, reply history |
+| `my-jiny/` | `/opt/jiny-m/` | All jiny-M data: config (`.jiny/`), secrets (`.env`), workspace (`workspace/`) |
 | `opencode.jsonc` | `/root/.config/opencode/opencode.jsonc` | OpenCode AI config (API keys, providers, model settings) |
 
 ## Quick Start with Podman
@@ -106,7 +104,7 @@ Create `my-jiny/.jiny/config.json` (secrets use `${VAR}` — resolved from `.env
 }
 ```
 
-Create `my-jiny/.env.jiny` with the actual secrets:
+Create `my-jiny/.env` with the actual secrets:
 
 ```env
 EMAIL_USER=your-email@example.com
@@ -123,9 +121,7 @@ cp ~/.config/opencode/opencode.jsonc my-jiny/opencode.jsonc
 
 ```bash
 podman run -d --name jiny-m \
-  -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
-  -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
-  -v $(pwd)/my-jiny/workspace:/opt/jiny-m/workspace \
+  -v $(pwd)/my-jiny:/opt/jiny-m \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   -e GH_TOKEN=ghp_your_token \
   -e GIT_USER_NAME=kingye \
@@ -172,9 +168,7 @@ podman build -t jiny-m:latest -f docker/Dockerfile .
 # Recreate container (old one has the old image)
 podman rm -f jiny-m
 podman run -d --name jiny-m \
-  -v $(pwd)/my-jiny/.jiny:/opt/jiny-m/.jiny \
-  -v $(pwd)/my-jiny/.env.jiny:/opt/jiny-m/.env:ro \
-  -v $(pwd)/my-jiny/workspace:/opt/jiny-m/workspace \
+  -v $(pwd)/my-jiny:/opt/jiny-m \
   -v $(pwd)/my-jiny/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   jiny-m:latest
 ```
@@ -191,8 +185,7 @@ cp .env.example .env
 Edit `.env` with your paths:
 
 ```env
-JINY_CONFIG_DIR=/path/to/your/.jiny
-JINY_WORKSPACE_DIR=/path/to/your/workspace
+JINY_DIR=/path/to/your/jiny-data
 OPENCODE_CONFIG=/path/to/your/opencode.jsonc
 GH_TOKEN=ghp_...  # optional, for GitHub PR workflow
 ```

@@ -1619,7 +1619,7 @@ User receives:
 - Two compiled binaries: `jiny-m` (main) + `jiny-m-reply-tool` (MCP tool)
 - jiny-M source at `/opt/jiny-m-src/` (for rebuilding during bootstrapping)
 
-**Volume mounts** (4 volumes from host):
+**Volume mounts** (2 volumes from host):
 ```yaml
 services:
   jiny-m:
@@ -1627,9 +1627,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     volumes:
-      - ${JINY_CONFIG_DIR}:/opt/jiny-m/.jiny          # config.json (with ${VAR} refs)
-      - ${JINY_ENV_FILE}:/opt/jiny-m/.env:ro           # secrets (Bun auto-loads)
-      - ${JINY_WORKSPACE_DIR}:/opt/jiny-m/workspace    # thread dirs, messages
+      - ${JINY_DIR}:/opt/jiny-m                          # all jiny-M data (.jiny/, .env, workspace/)
       - ${OPENCODE_CONFIG}:/root/.config/opencode/opencode.jsonc:ro  # AI provider config
     environment:
       - GH_TOKEN            # GitHub CLI auth
