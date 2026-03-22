@@ -21,7 +21,7 @@ import type { ReplyContext } from './context';
 import type { OutboundAdapter, InboundMessage } from '../channels/types';
 import { ConfigManager } from '../config';
 import { MessageStorage } from '../core/message-storage';
-import { formatQuotedReply } from '../core/email-parser';
+import { formatQuotedReply, prepareBodyForQuoting } from '../core/email-parser';
 import { PathValidator } from '../core/security';
 
 // Email-specific imports (loaded on demand when channel is "email")
@@ -247,12 +247,31 @@ async function handleReplyMessage(
   }
 
   // 8. Build full reply text: AI reply + quoted history (markdown)
-  const quotedHistory = formatQuotedReply(
-    replyContext.sender,
-    replyContext.timestamp,
-    replyContext.topic,
-    originalMessage.content.text || '',
-  );
+  let quotedHistory: string;
+  try {
+    quotedHistory = await prepareBodyForQuoting(
+      threadPath,
+      {
+        sender: replyContext.sender,
+        timestamp: replyContext.timestamp,
+        topic: replyContext.topic,
+        bodyText: originalMessage.content.text || '',
+      },
+      undefined, // maxHistory (default)
+      replyContext.incomingMessageDir,
+    );
+  } catch (error) {
+    log('WARN', 'Failed to prepare quoted history, falling back to single message', {
+      error: error instanceof Error ? error.message : 'Unknown',
+      threadPath,
+    });
+    quotedHistory = formatQuotedReply(
+      replyContext.sender,
+      replyContext.timestamp,
+      replyContext.topic,
+      originalMessage.content.text || '',
+    );
+  }
   const fullReplyText = quotedHistory
     ? `${message}\n\n${quotedHistory}`
     : message;
