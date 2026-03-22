@@ -72,6 +72,17 @@ export interface EmailChannelConfig {
   watch?: WatchConfig;
 }
 
+/** Multi-mailbox: Named channel config with type, settings, and optional per-channel workspace. */
+export interface ChannelConfig {
+  type: 'email' | 'feishu' | string;
+  inbound?: ImapConfig;
+  outbound?: SmtpConfig;
+  watch?: WatchConfig;
+  patterns?: ChannelPattern[];
+  workspace?: string;
+  reply?: Partial<ReplyConfig>;
+}
+
 /**
  * Legacy pattern type (email-only, pre-channel-agnostic).
  * Kept for backward compatibility during config migration.
@@ -260,17 +271,15 @@ export interface HealthCheckConfig {
  * Channel-agnostic config structure.
  */
 export interface Config {
-  /** Channel-specific configurations. */
-  channels?: {
-    email?: EmailChannelConfig;
-  };
+  /** Named channel configurations (e.g., work, personal). Each has its own IMAP/SMTP/patterns/workspace. */
+  channels?: Record<string, ChannelConfig>;
   /** Unified pattern list with channel-specific rules. */
   patterns: (ChannelPattern | Pattern)[];
-  /** Workspace storage settings. */
+  /** Workspace storage settings (global default). */
   workspace: WorkspaceConfig;
   /** Worker pool settings. */
   worker?: WorkerConfig;
-  /** Reply generation settings. */
+  /** Reply generation settings (global default). */
   reply: ReplyConfig;
   /** Error alerting settings. */
   alerting?: AlertingConfig;

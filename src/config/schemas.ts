@@ -1,4 +1,4 @@
-import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig, ChannelPattern, AlertingConfig, HealthCheckConfig } from '../types';
+import type { Config, Pattern, ImapConfig, SmtpConfig, WatchConfig, OutputConfig, WorkspaceConfig, ReplyConfig, OpenCodeConfig, InboundAttachmentConfig, ChannelPattern, AlertingConfig, HealthCheckConfig, ChannelConfig } from '../types';
 import { validateRegex, extractDomain, parseFileSize } from '../utils/helpers';
 
 export class ConfigValidationError extends Error {
@@ -411,27 +411,84 @@ export function validateConfig(config: any): Config {
     throw new ConfigValidationError('Configuration is required');
   }
 
-  // Support both new (channels.email) and legacy (top-level imap/smtp) formats
+  // Support multiple channel formats:
+  // 1. New multi-channel: channels.{name}.{type, inbound, outbound, watch, patterns, workspace}
+  // 2. Single-channel: channels.email.{inbound, outbound, watch}
+  // 3. Legacy: top-level imap/smtp/watch
+  const channels: Record<string, ChannelConfig> = {};
+
+  // Process new multi-channel format (channels: { work: {...}, personal: {...} })
+  if (config.channels && typeof config.channels === 'object') {
+    for (const [channelName, channelConfig] of Object.entries(config.channels)) {
+      if (!channelConfig || typeof channelConfig !== 'object') continue;
+      
+      const validated: ChannelConfig = {
+        type: channelConfig.type || 'email',
+      };
+
+      if (channelConfig.inbound) {
+        validated.inbound = validateImapConfig(channelConfig.inbound);
+      }
+      if (channelConfig.outbound) {
+        validated.outbound = validateSmtpConfig(channelConfig.outbound);
+      }
+      if (channelConfig.watch) {
+        validated.watch = validateWatchConfig(channelConfig.watch);
+      }
+      if (channelConfig.workspace && typeof channelConfig.workspace === 'string') {
+        validated.workspace = channelConfig.workspace;
+      }
+      if (channelConfig.reply && typeof channelConfig.reply === 'object') {
+        validated.reply = validateReplyConfig(channelConfig.reply);
+      }
+
+      // Channel-specific patterns
+      if (channelConfig.patterns && Array.isArray(channelConfig.patterns)) {
+        validated.patterns = channelConfig.patterns.map((p: any) => {
+          if (p.channel && p.rules) return validateChannelPattern(p);
+          return { ...validatePattern(p), channel: 'email' };
+        });
+      }
+
+      if (validated.inbound || validated.outbound) {
+        channels[channelName] = validated;
+      }
+    }
+  }
+
+  // Legacy format: channels.email (single email channel)
+  if (!channels.email && config.channels?.email) {
+    const emailConfig = config.channels.email;
+    channels.email = {
+      type: 'email',
+      inbound: emailConfig.inbound ? validateImapConfig(emailConfig.inbound) : undefined,
+      outbound: emailConfig.outbound ? validateSmtpConfig(emailConfig.outbound) : undefined,
+      watch: emailConfig.watch ? validateWatchConfig(emailConfig.watch) : undefined,
+    };
+  }
+
+  // Legacy format fallback: top-level imap/smtp
   let imapConfig: ImapConfig | undefined;
   let smtpConfig: SmtpConfig | undefined;
   let watchConfig: WatchConfig | undefined;
 
-  if (config.channels?.email) {
-    // New format: channels.email.inbound / channels.email.outbound
-    imapConfig = config.channels.email.inbound ? validateImapConfig(config.channels.email.inbound) : undefined;
-    smtpConfig = config.channels.email.outbound ? validateSmtpConfig(config.channels.email.outbound) : undefined;
-    watchConfig = config.channels.email.watch ? validateWatchConfig(config.channels.email.watch) : undefined;
-  }
-
-  // Legacy format fallback
-  if (!imapConfig && config.imap) {
+  if (!channels.email && config.imap) {
     imapConfig = validateImapConfig(config.imap);
   }
-  if (!smtpConfig && config.smtp) {
+  if (!channels.email && config.smtp) {
     smtpConfig = validateSmtpConfig(config.smtp);
   }
-  if (!watchConfig && config.watch) {
+  if (!channels.email && config.watch) {
     watchConfig = validateWatchConfig(config.watch);
+  }
+
+  if (imapConfig || smtpConfig) {
+    channels.email = {
+      type: 'email',
+      inbound: imapConfig,
+      outbound: smtpConfig,
+      watch: watchConfig,
+    };
   }
 
   // Convert patterns: support both legacy Pattern and new ChannelPattern
@@ -452,15 +509,9 @@ export function validateConfig(config: any): Config {
     reply: validateReplyConfig(config.reply),
   };
 
-  // Store channel config in new format
-  if (imapConfig || smtpConfig) {
-    result.channels = {
-      email: {
-        inbound: imapConfig!,
-        outbound: smtpConfig!,
-        watch: watchConfig,
-      },
-    };
+  // Store channel configs
+  if (Object.keys(channels).length > 0) {
+    result.channels = channels;
   }
 
   // Keep legacy fields for backward compat

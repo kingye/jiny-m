@@ -17,6 +17,7 @@ export class StateManager {
   private static stateFilePath: string = '.jiny/email/.state.json';
   private static stateDir: string = '.jiny/email';
   private static migrationDisabled: boolean = false;
+  private static currentChannel: string = 'email';
   private static state: MonitorState = {
     lastSequenceNumber: 0,
     lastProcessedTimestamp: new Date().toISOString(),
@@ -26,6 +27,18 @@ export class StateManager {
   static setStateFilePath(path: string): void {
     StateManager.stateFilePath = path;
     StateManager.stateDir = dirname(path);
+  }
+
+  /** Set the current channel name (e.g., 'work', 'personal'). Updates paths accordingly. */
+  static setChannel(channelName: string): void {
+    StateManager.currentChannel = channelName;
+    StateManager.stateFilePath = `.jiny/${channelName}/.email/.state.json`;
+    StateManager.stateDir = `.jiny/${channelName}/.email`;
+  }
+
+  /** Get the current channel name. */
+  static getChannel(): string {
+    return StateManager.currentChannel;
   }
 
   private static getDir(): string {
@@ -572,6 +585,7 @@ export class StateManager {
    */
   static restoreAfterTests(): void {
     StateManager.migrationDisabled = false;
+    StateManager.currentChannel = 'email';
     StateManager.stateFilePath = '.jiny/email/.state.json';
     StateManager.stateDir = '.jiny/email';
     StateManager.state = {

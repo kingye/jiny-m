@@ -1033,22 +1033,32 @@ Each directory contains:
 
 ```typescript
 interface Config {
-  channels: {
-    email?: EmailChannelConfig;
-    feishu?: FeiShuChannelConfig;     // future
-  };
-  patterns: ChannelPattern[];
-  workspace: WorkspaceConfig;
+  channels: Record<string, ChannelConfig>;  // Named channels: "work", "personal", etc.
+  patterns?: ChannelPattern[];               // Global patterns (applies to all channels)
+  workspace?: WorkspaceConfig;               // Global workspace (can be overridden per-channel)
   worker?: WorkerConfig;
   reply: ReplyConfig;
   alerting?: AlertingConfig;
   output?: OutputConfig;
 }
 
+interface ChannelConfig {
+  type: 'email' | 'feishu' | string;
+  inbound?: ImapConfig;
+  outbound?: SmtpConfig;
+  watch?: WatchConfig;
+  patterns?: ChannelPattern[];               // Channel-specific patterns
+  workspace?: string;                         // Channel-specific workspace path
+  reply?: Partial<ReplyConfig>;               // Channel-specific reply settings
+}
+
 interface EmailChannelConfig {
+  type: 'email';
   inbound: ImapConfig;
   outbound: SmtpConfig;
   watch?: WatchConfig;
+  patterns?: ChannelPattern[];
+  workspace?: string;
 }
 
 interface WorkerConfig {
@@ -1086,12 +1096,120 @@ interface AttachmentConfig {
 ```
 .jiny/
 ├── config.json                       # Main config
-└── email/                            # Email channel state
-    ├── .state.json                   # { lastSequenceNumber, lastProcessedTimestamp, migrationVersion }
-    └── .processed-uids.txt           # One UID per line, append-only
+└── <channel-name>/                   # Per-channel directory (e.g., "work", "personal")
+    ├── .email/                       # Email channel state
+    │   ├── .state.json               # { lastSequenceNumber, lastProcessedTimestamp, migrationVersion }
+    │   └── .processed-uids.txt       # One UID per line, append-only
+    └── workspace/                    # Channel-specific workspace (thread directories)
 ```
 
 Each channel manages its own state independently. For email, state tracks IMAP sequence numbers and processed UIDs. For FeiShu (future), state would track webhook cursors or message timestamps.
+
+### Multi-Mailbox Support
+
+Jiny-M supports multiple email accounts (mailboxes) running in a single process. Each mailbox is configured as a separate channel with its own IMAP/SMTP configuration, patterns, and workspace.
+
+#### Config Structure
+
+```json
+{
+  "channels": {
+    "work": {
+      "type": "email",
+      "inbound": {
+        "host": "imap.company.com",
+        "port": 993,
+        "tls": true,
+        "username": "me@company.com",
+        "password": "${IMAP_PASSWORD}"
+      },
+      "outbound": {
+        "host": "smtp.company.com",
+        "port": 465,
+        "secure": true,
+        "username": "me@company.com",
+        "password": "${SMTP_PASSWORD}"
+      },
+      "watch": {
+        "pollInterval": 30000,
+        "folder": "INBOX",
+        "useIdle": true
+      },
+      "patterns": [
+        {
+          "name": "support",
+          "rules": {
+            "sender": { "domain": ["company.com"] }
+          }
+        }
+      ],
+      "workspace": "workspace/"
+    },
+    "personal": {
+      "type": "email",
+      "inbound": { ... },
+      "outbound": { ... },
+      "patterns": [...],
+      "workspace": "workspace/"
+    }
+  },
+  "worker": {
+    "maxConcurrentThreads": 3,
+    "maxQueueSizePerThread": 10
+  },
+  "reply": { ... },
+  "alerting": { ... },
+  "output": { ... }
+}
+```
+
+#### Channel Configuration Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Channel type (currently only `"email"`) |
+| `inbound` | Yes | IMAP configuration for receiving emails |
+| `outbound` | Yes | SMTP configuration for sending replies |
+| `watch` | No | Email polling settings (pollInterval, folder, useIdle) |
+| `patterns` | No | Array of pattern definitions for this channel |
+| `workspace` | No | Workspace directory path (default: `{channel-name}/workspace/`) |
+| `reply` | No | Channel-specific reply settings (overrides global) |
+
+#### Directory Structure (Multi-Mailbox)
+
+```
+.jiny/
+├── config.json                    # Master config with channels{}
+├── work/
+│   ├── .email/
+│   │   ├── .state.json            # IMAP state for work mailbox
+│   │   └── .processed-uids.txt    # Processed UIDs for work
+│   └── workspace/                 # Thread directories for work emails
+│       └── <thread-dir>/
+│           └── messages/
+├── personal/
+│   ├── .email/
+│   │   ├── .state.json
+│   │   └── .processed-uids.txt
+│   └── workspace/
+│       └── <thread-dir>/
+│           └── messages/
+```
+
+#### Behavior
+
+- **Single process**: One jiny-m instance monitors all configured mailboxes concurrently
+- **Independent state**: Each mailbox has its own IMAP connection, processed UIDs, and thread storage
+- **Channel isolation**: Messages and threads never mix between mailboxes
+- **Concurrent processing**: All channels share the same worker pool (configured via `worker` settings)
+- **Global settings**: `worker`, `reply`, `alerting`, and `output` apply to all channels unless overridden per-channel
+
+#### Migration from Single-Mailbox
+
+Existing single-mailbox configs are automatically migrated:
+- The existing `channels.email` is mapped to a channel named `"default"`
+- State files in `.jiny/email/` are moved to `.jiny/default/.email/`
+- Workspace continues to use the configured `workspace.folder`
 
 ### Backward Compatibility
 

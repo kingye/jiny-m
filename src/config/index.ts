@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { validateConfig, expandEnvVars, ConfigValidationError } from './schemas';
-import type { Config, Pattern, ChannelPattern, EmailChannelConfig, WatchConfig, AlertingConfig } from '../types';
+import type { Config, Pattern, ChannelPattern, EmailChannelConfig, WatchConfig, AlertingConfig, ChannelConfig } from '../types';
 import { DEFAULT_CONFIG_PATH, DEFAULT_WATCH_CONFIG, DEFAULT_OUTPUT_CONFIG } from '../utils/constants';
 
 export class ConfigManager {
@@ -42,6 +42,22 @@ export class ConfigManager {
 
   // --- Channel config accessors ---
 
+  /** Get all configured channels (name -> config). */
+  getAllChannels(): Record<string, ChannelConfig> {
+    const config = this.getConfig();
+    return config.channels || {};
+  }
+
+  /** Get channel names. */
+  getChannelNames(): string[] {
+    return Object.keys(this.getAllChannels());
+  }
+
+  /** Get a specific channel config by name. */
+  getChannelConfig(channelName: string): ChannelConfig | undefined {
+    return this.getAllChannels()[channelName];
+  }
+
   /** Get email channel config (from channels.email or legacy imap/smtp). */
   getEmailChannelConfig(): EmailChannelConfig | undefined {
     const config = this.getConfig();
@@ -57,12 +73,22 @@ export class ConfigManager {
     return undefined;
   }
 
+  /** Get effective workspace path for a channel. */
+  getChannelWorkspace(channelName: string): string {
+    const config = this.getAllChannels()[channelName];
+    if (config?.workspace) return config.workspace;
+    // Default: channel name + /workspace
+    return `${channelName}/workspace`;
+  }
+
   /** Get watch config (from channels.email.watch or legacy watch). */
-  getEffectiveWatchConfig(): WatchConfig {
+  getEffectiveWatchConfig(channelName?: string): WatchConfig {
+    const channel = channelName ? this.getChannelConfig(channelName) : undefined;
     const emailConfig = this.getEmailChannelConfig();
+    const watchConfig = channel?.watch || emailConfig?.watch || this.getConfig().watch;
     return {
       ...DEFAULT_WATCH_CONFIG,
-      ...(emailConfig?.watch || this.getConfig().watch),
+      ...watchConfig,
     };
   }
 

@@ -25,6 +25,7 @@ import type {
 import type { WorkspaceConfig } from '../types';
 import { logger } from './logger';
 import { parseFileSize } from '../utils/helpers';
+import { StateManager } from './state-manager';
 
 // @ts-ignore - turndown module import
 import TurndownService from 'turndown';
@@ -166,8 +167,11 @@ async function resolveMessageDirCollision(parentDir: string, dirName: string): P
  */
 export class MessageStorage {
   private workspaceFolder: string;
+  private globalWorkspace: string;
+  private channelWorkspaceMap: Map<string, string> = new Map();
 
   constructor(config: WorkspaceConfig) {
+    this.globalWorkspace = config.folder;
     this.workspaceFolder = join(process.cwd(), config.folder);
   }
 
@@ -176,10 +180,42 @@ export class MessageStorage {
     return this.workspaceFolder;
   }
 
+  /** Set workspace path for a channel. */
+  setChannelWorkspace(channelName: string, workspacePath: string): void {
+    this.channelWorkspaceMap.set(channelName, join(process.cwd(), workspacePath));
+  }
+
+  /** Get workspace path for a specific channel. */
+  getChannelWorkspace(channelName: string): string {
+    // If channel has its own workspace, use it
+    if (this.channelWorkspaceMap.has(channelName)) {
+      return this.channelWorkspaceMap.get(channelName)!;
+    }
+    // Default: .jiny/{channel}/workspace
+    return join(process.cwd(), `.jiny/${channelName}/workspace`);
+  }
+
+  /** Get effective workspace for a channel (channel-specific or global). */
+  getEffectiveWorkspace(channelName?: string): string {
+    if (channelName) {
+      return this.getChannelWorkspace(channelName);
+    }
+    return this.workspaceFolder;
+  }
+
   /** Ensure the workspace root directory exists. */
   async init(): Promise<void> {
+    // Initialize global workspace
     await mkdir(this.workspaceFolder, { recursive: true });
     logger.info('Workspace initialized', { folder: this.workspaceFolder });
+  }
+
+  /** Ensure channel-specific workspace exists. */
+  async initChannelWorkspace(channelName: string): Promise<string> {
+    const workspace = this.getChannelWorkspace(channelName);
+    await mkdir(workspace, { recursive: true });
+    logger.info('Channel workspace initialized', { channel: channelName, folder: workspace });
+    return workspace;
   }
 
   /**
@@ -194,8 +230,23 @@ export class MessageStorage {
     message: InboundMessage,
     threadName: string,
     attachmentConfig?: AttachmentDownloadConfig,
+    channelName?: string,
   ): Promise<{ messageDir: string; threadPath: string }> {
-    const threadDir = join(this.workspaceFolder, threadName);
+    // Use channel-specific workspace if provided, otherwise try StateManager's channel
+    let effectiveWorkspace = this.workspaceFolder;
+    if (channelName) {
+      effectiveWorkspace = this.getChannelWorkspace(channelName);
+    } else {
+      // Fallback: use StateManager's current channel
+      const stateChannel = StateManager.getChannel();
+      if (stateChannel && this.channelWorkspaceMap.has(stateChannel)) {
+        effectiveWorkspace = this.getChannelWorkspace(stateChannel);
+      } else if (stateChannel) {
+        // Default: .jiny/{channel}/workspace
+        effectiveWorkspace = join(process.cwd(), `.jiny/${stateChannel}/workspace`);
+      }
+    }
+    const threadDir = join(effectiveWorkspace, threadName);
 
     // Create thread directory and messages/ subfolder
     const messagesDir = join(threadDir, 'messages');
