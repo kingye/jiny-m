@@ -515,8 +515,7 @@ ensureThreadOpencodeSetup(threadPath)
    → writes opencode.json with:
      - model from override or config
      - MCP config: jiny_reply server
-     - permission: { "*": "allow" }
-     - tools: { question: false } (headless mode)
+     - permission: { "*": "allow", "question": "deny" } (headless mode)
    → staleness check: rewrites if model, tool path, JINY_ROOT, or tools changed
    → if config changed: restart OpenCode server + create new session
      (server caches model from opencode.json at startup — must restart to switch)
@@ -541,7 +540,7 @@ promptWithProgress() (SSE streaming):
      - session.status → track busy/retry (deduped)
      - session.idle → done, collect result
      - session.error → handle (ContextOverflow → new session + retry)
-  4. Activity-based timeout: 2 min of silence → timeout
+  4. Activity-based timeout: 5 min of silence → timeout (10 min when tool running)
   5. Progress log every 10s (elapsed, parts, activity, silence)
   6. Step start/finish: log model used per step (detects main vs small_model usage)
        ↓
@@ -651,10 +650,10 @@ A single shared OpenCode server handles all threads. Each thread session operate
 - **Per-session directory** - `query.directory` parameter tells OpenCode where to work
 - **Thread isolation** - Each thread has its own session and `.opencode/` directory
 - **Model config via opencode.json** - `model` and `small_model` written to per-thread config; staleness check detects changes
-- **Headless mode** - `tools: { question: false }` disables interactive tools; staleness check ensures it's set
+- **Headless mode** - `permission: { "question": "deny" }` blocks the interactive question tool; staleness check ensures it's set
 - **Compiled reply-tool** - In Docker, `jiny-m-reply-tool` binary found at `/usr/local/bin/`; fallback to `bun run` in dev mode
 - **SSE streaming** - `promptAsync()` + `event.subscribe()` for real-time progress and tool detection
-- **Activity-based timeout** - No fixed deadline; times out if AI goes silent for 2 min (5 min when a tool is actively running, since OpenCode doesn't emit SSE events during tool execution)
+- **Activity-based timeout** - No fixed deadline; times out if AI goes silent for 5 min (10 min when a tool is actively running, since OpenCode doesn't emit SSE events during tool execution or sub-agent work)
 - **Fallback** - If SSE subscription fails, falls back to blocking `prompt()` with 5-min timeout
 - **Signal file detection** - Last-resort: checks `.jiny/reply-sent.flag` if SSE missed tool call events
 - **Stale signal cleanup** - Before each prompt, any leftover `reply-sent.flag` from a previous run is deleted to prevent false-positive detection
@@ -755,9 +754,9 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
   "$schema": "https://opencode.ai/config.json",
   "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
   "small_model": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
-  "permission": { "*": "allow" },
-  "tools": {
-    "question": false
+  "permission": {
+    "*": "allow",
+    "question": "deny"
   },
   "mcp": {
     "jiny_reply": {
@@ -777,9 +776,9 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 3. Fallback (dev mode): `bun run <source>/src/mcp/reply-tool.ts`
 
 **Disabled tools:**
-- `question: false` — jiny-M runs headless via email, no interactive terminal. The `question` tool would hang indefinitely.
+- `question: "deny"` — jiny-M runs headless via email, no interactive terminal. The `question` tool would hang indefinitely.
 
-**Staleness check**: Rewrites `opencode.json` if model, tool path, JINY_ROOT, or `tools.question` changed. When config changes, the OpenCode server is restarted (server caches model at startup) and a new session is created.
+**Staleness check**: Rewrites `opencode.json` if model, tool path, JINY_ROOT, or `permission.question` changed. When config changes, the OpenCode server is restarted (server caches model at startup) and a new session is created.
 ```
 
 - `model` and `small_model` from jiny-m config (`reply.opencode.model` / `reply.opencode.smallModel`)
@@ -797,7 +796,7 @@ Written by `ensureThreadOpencodeSetup()` in each thread directory:
 | AI reconstructs context instead of passing verbatim | JSON sanitization attempts repair; if parse still fails, tool returns error |
 | AI returns text without using tool | `session.idle` fires; ThreadManager sends via OutboundAdapter directly |
 | AI takes very long but keeps working | SSE events keep arriving → no timeout; progress logged every 10s |
-| AI goes silent for 2 minutes | Activity timeout (5 min if tool running) → force-closes SSE stream → checks signal file → if sent, success; otherwise error |
+| AI goes silent for 5 minutes | Activity timeout (10 min if tool running) → force-closes SSE stream → checks signal file → if sent, success; otherwise error |
 | SSE subscription fails | Falls back to blocking `prompt()` with 5-min timeout |
 | OpenCode server dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
@@ -1114,8 +1113,7 @@ Configurable per pattern via `attachments` in the pattern config.
 - Path validation for all file operations (PathValidator)
 - Attachment security: extension allowlist, size limit, filename sanitization
 - MCP tool: validate context before processing
-- `permission: { "*": "allow" }` in opencode.json allows all non-interactive tools
-- `tools: { question: false }` disables the interactive question tool (headless mode)
+- `permission: { "*": "allow", "question": "deny" }` in opencode.json allows all tools except interactive question
 - `system.md` per-thread customization — file permissions should restrict who can modify thread directories
 
 ## Email Command System
@@ -1183,9 +1181,15 @@ processMessage():
   2. CommandRegistry.parseCommands() → find /model etc.
   3. Execute commands (model switch, etc.)
   4. Strip command lines from body
-  5. ensureThreadOpencodeSetup() → opencode.json (with model override)
-  6. PromptBuilder → build prompt (cleaned body)
-  7. OpenCode → AI processes → reply
+  5. If body is empty after stripping → inject system note:
+     "[System: The following commands were executed. Confirm the results
+      to the user and stop.]"
+     This prevents the AI from exploring the codebase based on
+     conversation history when only commands were sent.
+  6. ensureThreadOpencodeSetup() → opencode.json (with model override)
+     → if config changed: restart OpenCode server + create new session
+  7. PromptBuilder → build prompt (cleaned body or command summary)
+  8. OpenCode → AI processes → reply
 ```
 
 ### Adding New Commands
@@ -1300,7 +1304,7 @@ Errors
 
 Context:
   [10:04:44] [INFO] AI processing... {"elapsed":"190s"...}
-  [10:04:54] [WARN] Activity timeout: no events for 2 minutes
+  [10:04:54] [WARN] Activity timeout: no events for 5 minutes
   [10:04:54] [ERROR] Failed to process message ...
 
 Reply Tool Logs
@@ -1493,7 +1497,7 @@ This is part of the general system prompt in `PromptBuilder.buildSystemPrompt()`
 
 #### Headless Mode (Disabled Interactive Tools)
 
-jiny-M runs headless via email — no interactive terminal. The `question` tool is disabled in `opencode.json` (`tools: { question: false }`). If the AI needs clarification, it should include its question in the reply email and wait for the user to respond in the next email.
+jiny-M runs headless via email — no interactive terminal. The `question` tool is denied in `opencode.json` (`permission: { "question": "deny" }`). If the AI needs clarification, it should include its question in the reply email and wait for the user to respond in the next email.
 
 #### Startup Health Check Email
 
@@ -1682,7 +1686,7 @@ docker/
 |---|---------|------|-------------|
 | 1 | `system.md` support | `src/services/opencode/prompt-builder.ts` | Read optional `<threadPath>/system.md`, append to system prompt |
 | 2 | Plan/Build modes | `src/services/opencode/prompt-builder.ts` | Mode detection from user keywords (EN + CN) in general system prompt |
-| 3 | Disable `question` tool | `src/services/opencode/index.ts` | `tools: { question: false }` in opencode.json (headless mode) |
+| 3 | Deny `question` tool | `src/services/opencode/index.ts` | `permission: { "question": "deny" }` in opencode.json (headless mode) |
 | 4 | Compiled reply-tool binary | `docker/Dockerfile` | `bun build --compile src/mcp/reply-tool.ts` alongside main binary |
 | 5 | Common path fallback | `src/services/opencode/index.ts` | `getReplyToolCommand()` checks `/usr/local/bin/` for compiled binary |
 | 6 | Startup health check | `src/cli/commands/monitor.ts` | Send startup email before starting inbound adapters |
