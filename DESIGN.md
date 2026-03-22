@@ -764,7 +764,7 @@ MCP Server (stdio subprocess, cwd = thread dir):
 
 - **Current message**: The message being replied to (sender, timestamp, topic, full body)
 - **Historical messages**: Reads `messages/` subdirectories sorted by timestamp (descending)
-- **Limit**: `MAX_HISTORY_QUOTE = 5` messages total (current + up to 4 previous)
+- **Limit**: `MAX_HISTORY_QUOTE = 3` messages total (current + up to 2 previous)
 - **Format**: Each message formatted with `formatQuotedReply()` into markdown quoted blocks
 - **Fallback**: If historical reading fails, falls back to single-message quoting with `formatQuotedReply()`
 
