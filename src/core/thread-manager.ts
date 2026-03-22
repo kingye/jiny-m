@@ -20,7 +20,7 @@ import { ChannelRegistry } from '../channels/registry';
 import { MessageStorage } from './message-storage';
 import { OpenCodeService } from '../services/opencode';
 import { CommandRegistry } from './command-handler';
-import { formatQuotedReply } from './email-parser';
+import { formatQuotedReply, prepareBodyForQuoting } from './email-parser';
 import { logger } from './logger';
 
 /** Queued item waiting to be processed. */
@@ -310,7 +310,7 @@ export class ThreadManager {
     }
 
     // Build full reply with quoted history (same as MCP tool path)
-    const fullReplyText = this.buildFullReplyText(replyText, message);
+    const fullReplyText = await this.buildFullReplyText(replyText, message, threadPath, messageDir);
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
@@ -339,7 +339,7 @@ export class ThreadManager {
     messageDir: string,
   ): Promise<void> {
     // Build full reply with quoted history
-    const fullReplyText = this.buildFullReplyText(replyText, message);
+    const fullReplyText = await this.buildFullReplyText(replyText, message, threadPath, messageDir);
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
@@ -363,13 +363,33 @@ export class ThreadManager {
    * The message.content.text contains the full body (cleaned at InboundAdapter boundary,
    * NOT stripped — stripping only happens in PromptBuilder for AI token budget).
    */
-  private buildFullReplyText(replyText: string, message: InboundMessage): string {
-    const quotedHistory = formatQuotedReply(
-      message.sender,
-      message.timestamp,
-      message.topic,
-      message.content.text || '',
-    );
+  private async buildFullReplyText(replyText: string, message: InboundMessage, threadPath: string, messageDir: string): Promise<string> {
+    let quotedHistory: string;
+    try {
+      quotedHistory = await prepareBodyForQuoting(
+        threadPath,
+        {
+          sender: message.sender,
+          timestamp: message.timestamp,
+          topic: message.topic,
+          bodyText: message.content.text || '',
+        },
+        undefined, // maxHistory (default)
+        messageDir,
+      );
+    } catch (error) {
+      // Fallback to single message quoting if historical quoting fails
+      logger.warn('Failed to prepare quoted history, falling back to single message', {
+        thread: threadPath,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      quotedHistory = formatQuotedReply(
+        message.sender,
+        message.timestamp,
+        message.topic,
+        message.content.text || '',
+      );
+    }
     return quotedHistory
       ? `${replyText}\n\n${quotedHistory}`
       : replyText;
