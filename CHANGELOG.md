@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SMTP auto-reconnect not triggering**: Error string matching checked for `"connection"` but the disconnected-transporter error contains `"connected"` — broadened to match `"connect"` so auto-reconnect fires correctly
 - **AlertService SMTP failure**: `sendFallbackReply()` and `sendDirectReply()` disconnected the shared SMTP adapter in their `finally` block, leaving AlertService unable to send digest emails; removed per-send connect/disconnect since the adapter is managed at the monitor lifecycle level
 
+### Changed
+- **Docker volumes simplified**: Reduced from 4 volume mounts to 2 — single host directory (`JINY_DIR`) maps to `/opt/jiny-m/` containing `.jiny/`, `.env`, and `workspace/`; OpenCode config remains a separate read-only mount
+
 ## [0.2.2] - 2026-03-22
 
 ### Added
