@@ -2,6 +2,7 @@ import type { CommandHandler, ParsedCommand } from './CommandHandler';
 import type { CommandContext, CommandResult } from './CommandHandler';
 import { logger } from '../logger';
 import { ModelCommandHandler } from './handlers/ModelCommandHandler';
+import { PlanCommandHandler, BuildCommandHandler } from './handlers/ModeCommandHandler';
 
 export class CommandRegistry {
   private handlers: Map<string, CommandHandler> = new Map();
@@ -12,6 +13,8 @@ export class CommandRegistry {
 
   private registerDefaultHandlers(): void {
     this.register(new ModelCommandHandler());
+    this.register(new PlanCommandHandler());
+    this.register(new BuildCommandHandler());
   }
 
   register(handler: CommandHandler): void {

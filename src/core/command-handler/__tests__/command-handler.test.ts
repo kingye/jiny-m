@@ -248,4 +248,90 @@ describe('Command Handler System', () => {
       expect(parsed.model).not.toBe('SiliconFlow/Pro/deepseek-ai/DeepSeek-V3');
     });
   });
+
+  describe('ModeCommandHandler (/plan and /build)', () => {
+    const makeContext = (args: string[]) => ({
+      email: { id: 'test', from: 'test@test.com', subject: 'Test' },
+      threadPath: tempDir,
+      config: { maxFileSize: '25mb', allowedExtensions: [] },
+      args,
+    });
+
+    test('should register /plan and /build handlers', () => {
+      const registry = new CommandRegistry();
+      expect(registry.get('/plan')).toBeDefined();
+      expect(registry.get('/build')).toBeDefined();
+    });
+
+    test('should parse /plan command', () => {
+      const registry = new CommandRegistry();
+      const commands = registry.parseCommands('/plan\n\nAnalyze the code.');
+      expect(commands.length).toBe(1);
+      expect(commands[0]?.handler.name).toBe('/plan');
+    });
+
+    test('should parse /build command', () => {
+      const registry = new CommandRegistry();
+      const commands = registry.parseCommands('/build\n\nImplement the feature.');
+      expect(commands.length).toBe(1);
+      expect(commands[0]?.handler.name).toBe('/build');
+    });
+
+    test('/plan should write mode-override file', async () => {
+      const registry = new CommandRegistry();
+      const handler = registry.get('/plan')!;
+
+      const result = await handler.execute(makeContext([]));
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('plan');
+
+      const { readModeOverride } = await import('../handlers/ModeCommandHandler');
+      const mode = await readModeOverride(tempDir);
+      expect(mode).toBe('plan');
+    });
+
+    test('/build should delete mode-override file', async () => {
+      const registry = new CommandRegistry();
+
+      // Set plan mode first
+      await registry.get('/plan')!.execute(makeContext([]));
+
+      // Then switch to build
+      const result = await registry.get('/build')!.execute(makeContext([]));
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('build');
+
+      const { readModeOverride } = await import('../handlers/ModeCommandHandler');
+      const mode = await readModeOverride(tempDir);
+      expect(mode).toBeNull();
+    });
+
+    test('readModeOverride returns null when no override exists', async () => {
+      const { readModeOverride } = await import('../handlers/ModeCommandHandler');
+      const noOverrideDir = join(tmpdir(), `no-mode-${Date.now()}`);
+      await mkdir(noOverrideDir, { recursive: true });
+
+      const result = await readModeOverride(noOverrideDir);
+      expect(result).toBeNull();
+
+      await rm(noOverrideDir, { recursive: true, force: true });
+    });
+
+    test('mode persists across command registry instances', async () => {
+      const registry1 = new CommandRegistry();
+      await registry1.get('/plan')!.execute(makeContext([]));
+
+      const { readModeOverride } = await import('../handlers/ModeCommandHandler');
+      const mode = await readModeOverride(tempDir);
+      expect(mode).toBe('plan');
+
+      // New registry instance reads the same override
+      const registry2 = new CommandRegistry();
+      const result = await registry2.get('/build')!.execute(makeContext([]));
+      expect(result.success).toBe(true);
+
+      const modeAfter = await readModeOverride(tempDir);
+      expect(modeAfter).toBeNull();
+    });
+  });
 });
