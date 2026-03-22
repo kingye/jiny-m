@@ -1,6 +1,7 @@
 # Exclude from Docker build context
 bootstrapping/
 workspace/
+.channels/
 node_modules/
 .git/
 *.md
