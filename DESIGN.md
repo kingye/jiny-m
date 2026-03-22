@@ -159,7 +159,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Orchestrator for the reply flow
 - Decodes the opaque context token to get metadata (channel, recipient, `incomingMessageDir`, etc.)
 - Reads `received.md` to get the full message body (the clean source of truth)
-- Builds the full reply in markdown: AI reply text + quoted history (`formatQuotedReply`)
+- Builds the full reply in markdown: AI reply text + quoted history (`prepareBodyForQuoting` → includes recent historical messages)
 - Delegates sending to OutboundAdapter/SmtpService (passes the full markdown reply)
 - Delegates storage to MessageStorage (stores the same full reply as `reply.md`)
 - `reply.md` reflects exactly what was sent to the recipient
@@ -185,7 +185,7 @@ Email arrives
       → PromptBuilder: read received.md, strip + truncate for AI → prompt
         → AI: receives stripped body + opaque context token
           → Reply Tool: decode context, read received.md (full body)
-            → formatQuotedReply(): AI reply + full quoted history (markdown)
+            → prepareBodyForQuoting(): AI reply + full quoted history (including recent historical messages)
             → SmtpService: markdown→HTML, add headers, send via SMTP
             → MessageStorage: store full reply → reply.md (= what was sent)
 ```
@@ -258,9 +258,9 @@ Email arrives
    │           │             │<──────────────────────────┼─────────────┤             │             │
    │           │             │──────────────────────────>│─────────────>             │             │
    │           │             │             │             │             │             │             │
-   │           │             │             │             │        formatQuotedReply()│             │
-   │           │             │             │             │        (no stripping,     │             │
-   │           │             │             │             │         just formatting)  │             │
+│           │             │             │             │   prepareBodyForQuoting()│             │
+    │           │             │             │             │   (current + historical  │             │
+    │           │             │             │             │    messages, max 5 total)│             │
    │           │             │             │             │             │             │             │
    │           │             │             │             │        fullReplyText =    │             │
    │           │             │             │             │          AI reply text    │             │
@@ -552,7 +552,7 @@ MCP Tool (reply-tool.ts):
      - "email" → EmailOutboundAdapter (SMTP)
      - "feishu" → FeiShuOutboundAdapter (future)
   3. Read messages/<incomingMessageDir>/received.md for full body
-  4. Build fullReplyText = AI reply + formatQuotedReply(full body)
+  4. Build fullReplyText = AI reply + prepareBodyForQuoting(full body + recent historical messages)
   5. adapter.sendReply(originalMessage, fullReplyText, attachments)
      → SmtpService: markdown→HTML, add Re: + threading headers, send
   6. MessageStorage.storeReply(fullReplyText) → reply.md = what was sent
@@ -736,7 +736,7 @@ MCP Server (stdio subprocess, cwd = thread dir):
   5. Validate attachments via PathValidator (exclude .opencode/, .jiny/)
   6. Reconstruct InboundMessage from context (content.text = empty)
   7. Read messages/<incomingMessageDir>/received.md → extract full body
-  8. Build full reply markdown: AI reply text + formatQuotedReply(full body)
+  8. Build full reply markdown: AI reply text + prepareBodyForQuoting(full body + recent historical messages)
   9. adapter.sendReply(originalMessage, fullReplyText, attachments)
      → SmtpService: markdown→HTML, add threading headers, send via SMTP
   10. MessageStorage.storeReply(threadPath, fullReplyText, messageDir)
@@ -744,6 +744,23 @@ MCP Server (stdio subprocess, cwd = thread dir):
   11. Write .jiny/reply-sent.flag (signal file for cross-process detection)
   12. Return success message
 ```
+ 
+### Historical Message Quoting
+
+`prepareBodyForQuoting()` combines the current message with recent historical messages to provide conversation context in replies:
+
+- **Current message**: The message being replied to (sender, timestamp, topic, full body)
+- **Historical messages**: Reads `messages/` subdirectories sorted by timestamp (descending)
+- **Limit**: `MAX_HISTORY_QUOTE = 5` messages total (current + up to 4 previous)
+- **Format**: Each message formatted with `formatQuotedReply()` into markdown quoted blocks
+- **Fallback**: If historical reading fails, falls back to single-message quoting with `formatQuotedReply()`
+
+**Implementation** (`src/core/email-parser.ts`):
+- `parseStoredMessage()` extracts sender, timestamp, topic, body from stored `received.md` frontmatter
+- `prepareBodyForQuoting(threadPath, currentMessage, maxHistory?, excludeMessageDir?)` orchestrates the collection and formatting
+- `formatQuotedReply(sender, timestamp, subject, bodyText)` formats a single message as a quoted markdown block
+
+**Frontmatter enhancement**: Stored `received.md` files now include `topic` and `timestamp` fields in YAML frontmatter for reliable historical reconstruction.
 
 ### Per-Thread OpenCode Config (`opencode.json`)
 
@@ -1098,7 +1115,7 @@ Configurable per pattern via `attachments` in the pattern config.
 | **AI Prompt Context** | `PromptBuilder.buildPromptContext()` | **Yes** | **No** | Keep AI focused on latest message |
 | **AI Prompt Body** | `PromptBuilder.buildPrompt()` | **Yes** | **No** | Incoming message body for AI |
 | **`<reply_context>`** | `serializeContext()` | N/A | N/A | Metadata-only base64 token — no body content |
-| **Reply Tool** | `reply-tool.ts` | **No** | **No** | Reads `received.md` (already clean), builds full reply with quoted history |
+| **Reply Tool** | `reply-tool.ts` | **No** | **No** | Reads `received.md` (already clean), builds full reply with quoted history (includes recent historical messages via `prepareBodyForQuoting`) |
 | **Outbound** | `SmtpService` | **No** | **No** | Dumb transport: markdown→HTML, add headers, send |
 
 **Code Organization:**
