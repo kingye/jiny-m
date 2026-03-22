@@ -1,0 +1,7 @@
+# Exclude from Docker build context
+bootstrapping/
+workspace/
+node_modules/
+.git/
+*.md
+!docker/README.md
