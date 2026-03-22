@@ -208,6 +208,7 @@ export class ThreadManager {
       // 2. Process commands (e.g., /model) and strip them from the body
       const commandRegistry = new CommandRegistry();
       const commands = commandRegistry.parseCommands(message.content.text);
+      const commandResults: string[] = [];
       if (commands.length > 0) {
         for (const cmd of commands) {
           const result = await commandRegistry.execute(cmd, {
@@ -221,6 +222,7 @@ export class ThreadManager {
           });
           if (result.message) {
             logger.info('Command result', { command: cmd.handler.name, message: result.message });
+            commandResults.push(`${cmd.handler.name}: ${result.message}`);
           }
         }
         // Strip executed command lines from the message body so the AI doesn't see them
@@ -235,6 +237,13 @@ export class ThreadManager {
               return !cmdName || !commandNames.has(cmdName);
             })
             .join('\n');
+        }
+
+        // If body is empty after stripping commands, inject a note so the AI
+        // knows only commands were executed and should confirm + stop.
+        if (commandResults.length > 0 && (!message.content.text || !message.content.text.trim())) {
+          const summary = commandResults.join('\n');
+          message.content.text = `[System: The following commands were executed. Confirm the results to the user and stop.]\n${summary}`;
         }
       }
 
