@@ -471,8 +471,8 @@ export class OpenCodeService {
   ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
     if (!this.client) throw new Error('OpenCode client not initialized');
 
-    const ACTIVITY_TIMEOUT = 120_000;  // 2 minutes of silence → timeout
-    const TOOL_ACTIVITY_TIMEOUT = 300_000; // 5 minutes when a tool is actively running
+    const ACTIVITY_TIMEOUT = 300_000;  // 5 minutes of silence → timeout
+    const TOOL_ACTIVITY_TIMEOUT = 600_000; // 10 minutes when a tool is actively running
     const PROGRESS_LOG_INTERVAL = 10_000; // Log progress every 10 seconds
     const sessionId = session.sessionId;
 
