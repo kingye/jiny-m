@@ -25,6 +25,7 @@ export class EmailMonitor {
   private lastUid: number | null = null;
   private reconnectAttempts: number = 0;
   private lastSuccessfulPoll: number = 0;
+  private hadMessagesInLastCheck: boolean = false;
   private channelName: string;
   private sm: StateManager;
   private log!: {
@@ -181,8 +182,13 @@ export class EmailMonitor {
     currentCount: number,
     options: MonitorOptions
   ) {
-    if (currentCount <= lastSeq) {
-      this.log.debug('No new messages', { lastSeq, currentCount });
+    const hasNewMessages = currentCount > lastSeq;
+
+    if (!hasNewMessages) {
+      if (this.hadMessagesInLastCheck) {
+        this.log.debug('No new messages', { lastSeq, currentCount });
+        this.hadMessagesInLastCheck = false;
+      }
       return;
     }
 
@@ -194,9 +200,11 @@ export class EmailMonitor {
     const newMessages = await this.imapClient.fetchRange(lastSeq + 1, currentCount, this.folder);
 
     if (newMessages.length === 0) {
+      this.hadMessagesInLastCheck = false;
       return;
     }
 
+    this.hadMessagesInLastCheck = true;
     logger.info(`Found ${newMessages.length} new email(s)`);
 
     for (const message of newMessages) {
