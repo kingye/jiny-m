@@ -11,81 +11,256 @@ export interface MonitorState {
   migrationVersion?: number;
 }
 
+/**
+ * Per-channel state manager. Each IMAP monitor gets its own instance
+ * to avoid race conditions when multiple channels run concurrently.
+ */
 export class StateManager {
   private static readonly CURRENT_MIGRATION_VERSION = 3;
   private static readonly UID_SET_FILE = '.processed-uids.txt';
-  private static stateFilePath: string = 'email/.email/.state.json';
-  private static stateDir: string = 'email/.email';
-  private static migrationDisabled: boolean = false;
-  private static currentChannel: string = 'email';
-  private static state: MonitorState = {
+
+  // Instance fields — per-channel
+  readonly channelName: string;
+  private stateFilePath: string;
+  private stateDir: string;
+  private migrationDisabled: boolean = false;
+  private state: MonitorState = {
     lastSequenceNumber: 0,
     lastProcessedTimestamp: new Date().toISOString(),
     lastProcessedUid: 0,
   };
 
-  static setStateFilePath(path: string): void {
-    StateManager.stateFilePath = path;
-    StateManager.stateDir = dirname(path);
+  constructor(channelName: string) {
+    this.channelName = channelName;
+    this.stateFilePath = `${channelName}/.email/.state.json`;
+    this.stateDir = `${channelName}/.email`;
   }
 
-  /** Set the current channel name (e.g., 'work', 'personal'). Updates paths accordingly. */
+  /** Create a StateManager for a specific channel. */
+  static forChannel(channelName: string): StateManager {
+    return new StateManager(channelName);
+  }
+
+  // --- Legacy static singleton support (for CLI commands, tests) ---
+  private static defaultInstance: StateManager = new StateManager('email');
+
+  /** @deprecated Use instance methods. Set the default channel for legacy code. */
   static setChannel(channelName: string): void {
-    StateManager.currentChannel = channelName;
-    // Channel state at project root: {channel}/.email/
-    StateManager.stateFilePath = `${channelName}/.email/.state.json`;
-    StateManager.stateDir = `${channelName}/.email`;
+    StateManager.defaultInstance = new StateManager(channelName);
   }
 
-  /** Get the current channel name. */
+  /** @deprecated Use instance methods. */
   static getChannel(): string {
-    return StateManager.currentChannel;
+    return StateManager.defaultInstance.channelName;
   }
 
-  private static getDir(): string {
-    return StateManager.stateDir;
+  /** @deprecated Use instance methods. */
+  static setStateFilePath(path: string): void {
+    StateManager.defaultInstance.stateFilePath = path;
+    StateManager.defaultInstance.stateDir = dirname(path);
   }
 
-  static async ensureInitialized(): Promise<void> {
-    await StateManager.load();
+  /** @deprecated Use instance methods. Static wrappers delegate to defaultInstance. */
+  static async ensureInitialized(): Promise<void> { return StateManager.defaultInstance.ensureInitialized(); }
+  static async load(): Promise<void> { return StateManager.defaultInstance.load(); }
+  static async save(): Promise<void> { return StateManager.defaultInstance.save(); }
+  static getLastSequenceNumber(): number { return StateManager.defaultInstance.getLastSequenceNumber(); }
+  static getLastProcessedTimestamp(): Date { return StateManager.defaultInstance.getLastProcessedTimestamp(); }
+  static getLastProcessedTimestampString(): string { return StateManager.defaultInstance.getLastProcessedTimestampString(); }
+  static getLastProcessedUid(): number { return StateManager.defaultInstance.getLastProcessedUid(); }
+  static getState(): MonitorState { return StateManager.defaultInstance.getState(); }
+  static updateState(seqNum: number, uid: number): void { StateManager.defaultInstance.updateState(seqNum, uid); }
+  static updateSequence(seq: number): void { StateManager.defaultInstance.updateSequence(seq); }
+  static updateUidValidity(uidValidity: number): void { StateManager.defaultInstance.updateUidValidity(uidValidity); }
+  static async loadProcessedUids(): Promise<Set<number>> { return StateManager.defaultInstance.loadProcessedUids(); }
+  static async trackUid(uid: number): Promise<void> { return StateManager.defaultInstance.trackUid(uid); }
+  static async saveProcessedUids(uids: number[]): Promise<void> { return StateManager.defaultInstance.saveProcessedUids(uids); }
+  static async resetProcessedUids(): Promise<void> { return StateManager.defaultInstance.resetProcessedUids(); }
+  static async reset(): Promise<void> { return StateManager.defaultInstance.reset(); }
+  static async skipMigrationForTests(): Promise<void> { StateManager.defaultInstance.migrationDisabled = true; }
+  static restoreAfterTests(): void { StateManager.defaultInstance = new StateManager('email'); }
 
-    if (StateManager.migrationDisabled) {
+  // --- Instance methods ---
+
+  private getDir(): string {
+    return this.stateDir;
+  }
+
+  async ensureInitialized(): Promise<void> {
+    await this.load();
+
+    if (this.migrationDisabled) {
       return;
     }
 
-    const currentVersion = StateManager.state.migrationVersion || 0;
+    const currentVersion = this.state.migrationVersion || 0;
 
     if (currentVersion < StateManager.CURRENT_MIGRATION_VERSION) {
       logger.info('Migration required', {
+        ch: this.channelName,
         currentVersion,
         targetVersion: StateManager.CURRENT_MIGRATION_VERSION,
       });
 
       if (currentVersion < 1) {
-        await StateManager.runMigrationV1();
+        await StateManager.runMigrationV1(this);
       }
       if (currentVersion < 2) {
-        await StateManager.runMigrationV2();
+        await StateManager.runMigrationV2(this);
       }
       if (currentVersion < 3) {
-        await StateManager.runMigrationV3();
+        await StateManager.runMigrationV3(this);
       }
 
-      StateManager.state.migrationVersion = StateManager.CURRENT_MIGRATION_VERSION;
-      await StateManager.save();
+      this.state.migrationVersion = StateManager.CURRENT_MIGRATION_VERSION;
+      await this.save();
 
       logger.info('Migration completed successfully', {
+        ch: this.channelName,
         newVersion: StateManager.CURRENT_MIGRATION_VERSION,
       });
     }
   }
 
-  private static async runMigrationV1(): Promise<void> {
+  async load(): Promise<void> {
+    try {
+      const content = await readFile(this.stateFilePath, 'utf-8');
+      this.state = JSON.parse(content);
+      logger.debug('Loaded state', { ch: this.channelName, ...this.state });
+    } catch (error) {
+      // Fallback: try legacy .jiny/email/ path for backward compatibility
+      try {
+        const legacyPath = `.jiny/${this.channelName}/.state.json`;
+        const content = await readFile(legacyPath, 'utf-8');
+        this.state = JSON.parse(content);
+        logger.debug('Loaded state from legacy path', { ch: this.channelName, path: legacyPath });
+        return;
+      } catch {
+        // Legacy path also doesn't exist — start fresh
+      }
+      logger.debug('No previous state found, starting fresh', { ch: this.channelName });
+    }
+  }
+
+  async save(): Promise<void> {
+    try {
+      await mkdir(this.getDir(), { recursive: true });
+    } catch {
+      // Directory already exists
+    }
+    await writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2), 'utf-8');
+  }
+
+  updateState(seqNum: number, uid: number): void {
+    this.state.lastSequenceNumber = seqNum;
+    this.state.lastProcessedUid = uid;
+    this.state.lastProcessedTimestamp = new Date().toISOString();
+  }
+
+  updateSequence(seq: number): void {
+    this.state.lastSequenceNumber = seq;
+  }
+
+  updateUidValidity(uidValidity: number): void {
+    this.state.uidValidity = uidValidity;
+  }
+
+  getLastSequenceNumber(): number {
+    return this.state.lastSequenceNumber;
+  }
+
+  getLastProcessedTimestamp(): Date {
+    return new Date(this.state.lastProcessedTimestamp);
+  }
+
+  getLastProcessedTimestampString(): string {
+    return this.state.lastProcessedTimestamp;
+  }
+
+  getLastProcessedUid(): number {
+    return this.state.lastProcessedUid;
+  }
+
+  getState(): MonitorState {
+    return { ...this.state };
+  }
+
+  async loadProcessedUids(): Promise<Set<number>> {
+    try {
+      const content = await readFile(
+        join(this.getDir(), StateManager.UID_SET_FILE),
+        'utf-8'
+      );
+      const lines = content.trim().split('\n');
+      const uids = lines
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(Number);
+      return new Set(uids);
+    } catch (error) {
+      // File doesn't exist yet — return empty set (will be created on first trackUid)
+      if (error instanceof Error && error.message.includes('ENOENT')) {
+        return new Set();
+      }
+      throw new Error(
+        `Failed to load UID set: ${error instanceof Error ? error.message : 'Unknown'}`
+      );
+    }
+  }
+
+  async trackUid(uid: number): Promise<void> {
+    try {
+      const uidSet = await this.loadProcessedUids();
+
+      if (uidSet.has(uid)) {
+        return;
+      }
+
+      const uidSetFile = join(this.getDir(), StateManager.UID_SET_FILE);
+      await mkdir(this.getDir(), { recursive: true });
+
+      await appendFile(uidSetFile, `${uid}\n`, 'utf-8');
+    } catch (error) {
+      logger.error('Failed to track UID', {
+        ch: this.channelName,
+        uid,
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+    }
+  }
+
+  async saveProcessedUids(uids: number[]): Promise<void> {
+    const uidSetFile = join(this.getDir(), StateManager.UID_SET_FILE);
+    await mkdir(this.getDir(), { recursive: true });
+    const uidContent = uids.join('\n') + '\n';
+    await writeFile(uidSetFile, uidContent, 'utf-8');
+  }
+
+  async resetProcessedUids(): Promise<void> {
+    const uidSetFile = join(this.getDir(), StateManager.UID_SET_FILE);
+    await mkdir(this.getDir(), { recursive: true });
+    await writeFile(uidSetFile, '', 'utf-8');
+  }
+
+  async reset(): Promise<void> {
+    this.state = {
+      lastSequenceNumber: 0,
+      lastProcessedTimestamp: new Date().toISOString(),
+      lastProcessedUid: 0,
+      uidValidity: 1,
+    };
+    await this.save();
+    await this.resetProcessedUids();
+  }
+
+  // --- Static migration helpers (shared logic, called with instance context) ---
+
+  private static async runMigrationV1(sm: StateManager): Promise<void> {
     let processedCount = 0;
     let failed = false;
 
     try {
-      logger.info('Starting migration v1: Initialize UID set from mailbox');
+      logger.info('Starting migration v1: Initialize UID set from mailbox', { ch: sm.channelName });
 
       const { ConfigManager } = await import('../config');
       const config = await ConfigManager.create();
@@ -104,9 +279,7 @@ export class StateManager {
       const mailbox = await client.mailboxOpen('INBOX');
       const currentCount = mailbox.exists;
 
-      logger.info('Fetching all messages to build UID set', {
-        totalMessages: currentCount,
-      });
+      logger.info('Fetching all messages to build UID set', { totalMessages: currentCount });
 
       const uids: number[] = [];
 
@@ -132,68 +305,43 @@ export class StateManager {
       await imapClient.disconnect();
 
       if (failed) {
-        logger.error('Migration failed partially', {
-          processedCount,
-          totalExpected: currentCount,
-          error: 'Failed to fetch message',
-        });
-        throw new Error(
-          `Migration failed: Failed to process sequence ${processedCount + 1}`
-        );
+        throw new Error(`Migration failed: Failed to process sequence ${processedCount + 1}`);
       }
 
       if (uids.length !== currentCount) {
-        throw new Error(
-          `Migration failed: Expected ${currentCount} UIDs, got ${uids.length}`
-        );
+        throw new Error(`Migration failed: Expected ${currentCount} UIDs, got ${uids.length}`);
       }
 
-      if (!uids.includes(StateManager.state.lastProcessedUid)) {
-        logger.info('Adding existing lastProcessedUid to UID set', {
-          uid: StateManager.state.lastProcessedUid,
-        });
-        uids.push(StateManager.state.lastProcessedUid);
+      if (!uids.includes(sm.state.lastProcessedUid)) {
+        uids.push(sm.state.lastProcessedUid);
         uids.sort((a, b) => a - b);
       }
 
-      const uidSetFile = join(StateManager.getDir(), StateManager.UID_SET_FILE);
-
-      await mkdir(StateManager.getDir(), { recursive: true });
-
+      const uidSetFile = join(sm.getDir(), StateManager.UID_SET_FILE);
+      await mkdir(sm.getDir(), { recursive: true });
       const uidContent = uids.join('\n') + '\n';
       await writeFile(uidSetFile, uidContent, 'utf-8');
 
-      logger.info('UID set created successfully', {
-        uidCount: uids.length,
-        file: uidSetFile,
-      });
+      logger.info('UID set created successfully', { uidCount: uids.length, file: uidSetFile });
     } catch (error) {
-      logger.error('Migration v1 failed with error', {
+      logger.error('Migration v1 failed', {
         processedCount,
         error: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : undefined,
       });
 
       try {
-        const uidSetFile = join(StateManager.getDir(), StateManager.UID_SET_FILE);
+        const uidSetFile = join(sm.getDir(), StateManager.UID_SET_FILE);
         await unlink(uidSetFile).catch(() => {});
-        logger.info('Cleaned up partial UID set file');
-      } catch (e) {
-      }
+      } catch (e) {}
 
       throw error;
     }
   }
 
-  /**
-   * Migration v2: Move email .md files from .jiny/ to messages/<timestamp>/ structure.
-   * Groups received emails and replies into per-message directories.
-   */
-  private static async runMigrationV2(): Promise<void> {
+  private static async runMigrationV2(sm: StateManager): Promise<void> {
     try {
       logger.info('Starting migration v2: Move .jiny/*.md to messages/ structure');
 
-      // Find the workspace folder from config
       const { ConfigManager } = await import('../config');
       const config = await ConfigManager.create();
       const workspaceFolder = join(process.cwd(), config.getWorkspaceConfig().folder);
@@ -217,11 +365,9 @@ export class StateManager {
 
         try {
           const entries = await readdir(jinyDir);
-          mdFiles = entries
-            .filter(f => f.endsWith('.md'))
-            .sort();
+          mdFiles = entries.filter(f => f.endsWith('.md')).sort();
         } catch {
-          continue; // No .jiny/ or can't read — skip this thread
+          continue;
         }
 
         if (mdFiles.length === 0) continue;
@@ -229,31 +375,22 @@ export class StateManager {
         const messagesDir = join(threadDir, 'messages');
         await mkdir(messagesDir, { recursive: true });
 
-        // Separate received emails and auto-replies
         const receivedFiles = mdFiles.filter(f => !f.includes('auto-reply'));
         const replyFiles = mdFiles.filter(f => f.includes('auto-reply'));
 
-        // Extract timestamp from filename: "2026-03-19_23-02-20_Jiny_subject.md" → "2026-03-19_23-02-20"
         const extractTimestamp = (filename: string): string => {
           const match = filename.match(/^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})/);
           return match?.[1] ?? filename.replace('.md', '');
         };
 
-        // Build pairs: each received email may have a reply
-        // Reply files are paired with the closest preceding received email
         const pairs: Array<{ received?: string; reply?: string; timestamp: string }> = [];
 
         for (const received of receivedFiles) {
-          pairs.push({
-            received,
-            timestamp: extractTimestamp(received),
-          });
+          pairs.push({ received, timestamp: extractTimestamp(received) });
         }
 
-        // Match replies to received emails
         for (const reply of replyFiles) {
           const replyTs = extractTimestamp(reply);
-          // Find closest preceding received email
           let bestPair = pairs.length > 0 ? pairs[pairs.length - 1] : undefined;
           for (let i = pairs.length - 1; i >= 0; i--) {
             if (pairs[i]!.timestamp <= replyTs) {
@@ -264,18 +401,14 @@ export class StateManager {
           if (bestPair) {
             bestPair.reply = reply;
           } else {
-            // Orphan reply — create its own pair
             pairs.push({ reply, timestamp: replyTs });
           }
         }
 
-        // Move files into messages/<timestamp>/ directories
         for (const pair of pairs) {
           let dirName = pair.timestamp;
-          // Check collision
           try {
             await readdir(join(messagesDir, dirName));
-            // Directory exists — add counter
             let counter = 2;
             while (true) {
               try {
@@ -286,34 +419,20 @@ export class StateManager {
                 break;
               }
             }
-          } catch {
-            // Directory doesn't exist — good
-          }
+          } catch {}
 
           const msgDir = join(messagesDir, dirName);
           await mkdir(msgDir, { recursive: true });
 
           if (pair.received) {
-            await rename(
-              join(jinyDir, pair.received),
-              join(msgDir, 'received.md'),
-            );
+            await rename(join(jinyDir, pair.received), join(msgDir, 'received.md'));
             totalMoved++;
           }
-
           if (pair.reply) {
-            await rename(
-              join(jinyDir, pair.reply),
-              join(msgDir, 'reply.md'),
-            );
+            await rename(join(jinyDir, pair.reply), join(msgDir, 'reply.md'));
             totalMoved++;
           }
         }
-
-        logger.debug('Migrated thread', {
-          thread: basename(threadDir),
-          pairs: pairs.length,
-        });
       }
 
       logger.info('Migration v2 completed', { totalFilesMoved: totalMoved });
@@ -321,276 +440,42 @@ export class StateManager {
       logger.error('Migration v2 failed', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      // Non-fatal: don't throw — old .jiny/ files will still work via legacy fallback
     }
   }
 
-  /**
-   * Migration v3: Move state files from .jiny/ to .jiny/email/ (per-channel state).
-   * Also adds `channel: email` to received.md frontmatter if missing.
-   */
-  private static async runMigrationV3(): Promise<void> {
+  private static async runMigrationV3(sm: StateManager): Promise<void> {
     try {
-      logger.info('Starting migration v3: Relocate state files to .jiny/email/');
+      logger.info('Starting migration v3: Move state to channel-specific directory');
 
-      const jinyDir = join(process.cwd(), '.jiny');
-      const emailStateDir = join(jinyDir, 'email');
+      const oldStatePath = `.jiny/email/.state.json`;
+      const oldStateDir = '.jiny/email';
 
-      // Create .jiny/email/ directory
-      await mkdir(emailStateDir, { recursive: true });
-
-      // Move .state.json if it exists in .jiny/ (not already in .jiny/email/)
-      const oldStatePath = join(jinyDir, '.state.json');
-      const newStatePath = join(emailStateDir, '.state.json');
       try {
-        await readFile(oldStatePath, 'utf-8');
-        // Old state file exists — check if new one already exists
-        try {
-          await readFile(newStatePath, 'utf-8');
-          // New file already exists — skip (don't overwrite)
-          logger.debug('State file already in .jiny/email/, skipping move');
-        } catch {
-          // New file doesn't exist — move
-          await rename(oldStatePath, newStatePath);
-          logger.info('Moved .state.json to .jiny/email/');
-        }
+        const content = await readFile(oldStatePath, 'utf-8');
+        await mkdir(sm.getDir(), { recursive: true });
+        await writeFile(sm.stateFilePath, content, 'utf-8');
+        logger.info('Migrated state file', { from: oldStatePath, to: sm.stateFilePath });
       } catch {
-        // Old state file doesn't exist — nothing to move
-        logger.debug('No .jiny/.state.json to migrate');
+        // Old state doesn't exist — nothing to migrate
       }
 
-      // Move .processed-uids.txt
-      const oldUidsPath = join(jinyDir, '.processed-uids.txt');
-      const newUidsPath = join(emailStateDir, '.processed-uids.txt');
+      const oldUidSetPath = join(oldStateDir, StateManager.UID_SET_FILE);
+      const newUidSetPath = join(sm.getDir(), StateManager.UID_SET_FILE);
+
       try {
-        await readFile(oldUidsPath, 'utf-8');
-        try {
-          await readFile(newUidsPath, 'utf-8');
-          logger.debug('UIDs file already in .jiny/email/, skipping move');
-        } catch {
-          await rename(oldUidsPath, newUidsPath);
-          logger.info('Moved .processed-uids.txt to .jiny/email/');
-        }
+        const content = await readFile(oldUidSetPath, 'utf-8');
+        await mkdir(sm.getDir(), { recursive: true });
+        await writeFile(newUidSetPath, content, 'utf-8');
+        logger.info('Migrated UID set file', { from: oldUidSetPath, to: newUidSetPath });
       } catch {
-        logger.debug('No .jiny/.processed-uids.txt to migrate');
+        // Old UID set doesn't exist — nothing to migrate
       }
 
-      // Update StateManager to use the new paths
-      StateManager.stateFilePath = newStatePath;
-      StateManager.stateDir = emailStateDir;
-
-      // Reload state from new location
-      try {
-        const content = await readFile(newStatePath, 'utf-8');
-        StateManager.state = JSON.parse(content);
-      } catch {
-        // No state file — will be created on first save
-      }
-
-      // Add channel: email to received.md files that don't have it
-      try {
-        const { ConfigManager: CM } = await import('../config');
-        const config = await CM.create();
-        const workspaceFolder = join(process.cwd(), config.getWorkspaceConfig().folder);
-
-        const entries = await readdir(workspaceFolder, { withFileTypes: true });
-        const threadDirs = entries
-          .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-          .map(e => join(workspaceFolder, e.name));
-
-        let updatedFiles = 0;
-        for (const threadDir of threadDirs) {
-          const messagesDir = join(threadDir, 'messages');
-          try {
-            const msgDirEntries = await readdir(messagesDir, { withFileTypes: true });
-            for (const msgDir of msgDirEntries.filter(e => e.isDirectory())) {
-              const receivedPath = join(messagesDir, msgDir.name, 'received.md');
-              try {
-                const content = await readFile(receivedPath, 'utf-8');
-                if (content.includes('channel:')) continue; // Already has channel field
-                // Add channel: email after the first ---
-                const updated = content.replace(
-                  /^---\n/,
-                  '---\nchannel: email\n',
-                );
-                if (updated !== content) {
-                  await writeFile(receivedPath, updated, 'utf-8');
-                  updatedFiles++;
-                }
-              } catch {
-                // No received.md or can't read — skip
-              }
-            }
-          } catch {
-            // No messages/ dir — skip
-          }
-        }
-
-        if (updatedFiles > 0) {
-          logger.info('Added channel field to received.md files', { count: updatedFiles });
-        }
-      } catch (error) {
-        // Non-fatal: frontmatter update is optional
-        logger.debug('Could not update received.md frontmatter', {
-          error: error instanceof Error ? error.message : 'Unknown',
-        });
-      }
-
-      logger.info('Migration v3 completed');
+      logger.info('Migration v3 complete');
     } catch (error) {
       logger.error('Migration v3 failed', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      // Non-fatal: old .jiny/ paths will still work via StateManager fallback
     }
-  }
-
-  static async load(): Promise<void> {
-    try {
-      const content = await readFile(StateManager.stateFilePath, 'utf-8');
-      StateManager.state = JSON.parse(content);
-      console.log('Loaded previous state:', StateManager.state);
-    } catch (error) {
-      // Fallback: try legacy .jiny/email/ path for backward compatibility
-      try {
-        const legacyPath = `.jiny/${StateManager.currentChannel}/.state.json`;
-        const content = await readFile(legacyPath, 'utf-8');
-        StateManager.state = JSON.parse(content);
-        console.log('Loaded previous state from legacy path:', StateManager.state);
-        return;
-      } catch {
-        // Legacy path also doesn't exist — start fresh
-      }
-      console.log('No previous state found, starting fresh');
-    }
-  }
-
-  static async save(): Promise<void> {
-    try {
-      await mkdir(StateManager.getDir(), { recursive: true });
-    } catch (error) {
-      console.debug('.jiny directory already exists or created');
-    }
-
-    await writeFile(StateManager.stateFilePath, JSON.stringify(StateManager.state, null, 2), 'utf-8');
-  }
-
-  static updateState(seqNum: number, uid: number): void {
-    StateManager.state.lastSequenceNumber = seqNum;
-    StateManager.state.lastProcessedUid = uid;
-    StateManager.state.lastProcessedTimestamp = new Date().toISOString();
-  }
-
-  static updateSequence(seq: number): void {
-    StateManager.state.lastSequenceNumber = seq;
-  }
-
-  static updateUidValidity(uidValidity: number): void {
-    StateManager.state.uidValidity = uidValidity;
-  }
-
-  static getLastSequenceNumber(): number {
-    return StateManager.state.lastSequenceNumber;
-  }
-
-  static getLastProcessedTimestamp(): Date {
-    return new Date(StateManager.state.lastProcessedTimestamp);
-  }
-
-  static getLastProcessedTimestampString(): string {
-    return StateManager.state.lastProcessedTimestamp;
-  }
-
-  static getLastProcessedUid(): number {
-    return StateManager.state.lastProcessedUid;
-  }
-
-  static getState(): MonitorState {
-    return { ...StateManager.state };
-  }
-
-  static async loadProcessedUids(): Promise<Set<number>> {
-    try {
-      const content = await readFile(
-        join(StateManager.getDir(), StateManager.UID_SET_FILE),
-        'utf-8'
-      );
-      const lines = content.trim().split('\n');
-      const uids = lines
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .map(Number);
-      return new Set(uids);
-    } catch (error) {
-      throw new Error(
-        `Failed to load UID set: ${error instanceof Error ? error.message : 'Unknown'}`
-      );
-    }
-  }
-
-  static async trackUid(uid: number): Promise<void> {
-    try {
-      const uidSet = await StateManager.loadProcessedUids();
-
-      if (uidSet.has(uid)) {
-        return;
-      }
-
-      const uidSetFile = join(StateManager.getDir(), StateManager.UID_SET_FILE);
-      await mkdir(StateManager.getDir(), { recursive: true });
-
-      await appendFile(uidSetFile, `${uid}\n`, 'utf-8');
-    } catch (error) {
-      logger.error('Failed to track UID', {
-        uid,
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-    }
-  }
-
-  static async saveProcessedUids(uids: number[]): Promise<void> {
-    const uidSetFile = join(StateManager.getDir(), StateManager.UID_SET_FILE);
-
-    await mkdir(StateManager.getDir(), { recursive: true });
-
-    const uidContent = uids.join('\n') + '\n';
-    await writeFile(uidSetFile, uidContent, 'utf-8');
-  }
-
-  static async resetProcessedUids(): Promise<void> {
-    const uidSetFile = join(StateManager.getDir(), StateManager.UID_SET_FILE);
-    await mkdir(StateManager.getDir(), { recursive: true });
-    await writeFile(uidSetFile, '', 'utf-8');
-  }
-
-  static async reset(): Promise<void> {
-    StateManager.state = {
-      lastSequenceNumber: 0,
-      lastProcessedTimestamp: new Date().toISOString(),
-      lastProcessedUid: 0,
-      uidValidity: 1,
-    };
-    await StateManager.save();
-    await StateManager.resetProcessedUids();
-  }
-
-  static async skipMigrationForTests(): Promise<void> {
-    StateManager.migrationDisabled = true;
-  }
-
-  /**
-   * Restore StateManager to production defaults after tests.
-   * Call in afterEach to prevent test state from leaking.
-   */
-  static restoreAfterTests(): void {
-    StateManager.migrationDisabled = false;
-    StateManager.currentChannel = 'email';
-    StateManager.stateFilePath = 'email/.email/.state.json';
-    StateManager.stateDir = 'email/.email';
-    StateManager.state = {
-      lastSequenceNumber: 0,
-      lastProcessedTimestamp: new Date().toISOString(),
-      lastProcessedUid: 0,
-    };
   }
 }

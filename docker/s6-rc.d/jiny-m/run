@@ -1,6 +1,9 @@
 #!/bin/bash
 cd /opt/jiny-m
 
+# Ensure HOME is set (s6-overlay may not set it)
+export HOME="${HOME:-/root}"
+
 # Load .env file if it exists (same file Bun auto-loads for config.json)
 if [ -f .env ]; then
   set -a

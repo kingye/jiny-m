@@ -26,7 +26,8 @@ export class EmailMonitor {
   private reconnectAttempts: number = 0;
   private lastSuccessfulPoll: number = 0;
   private channelName: string;
-  private log: {
+  private sm: StateManager;
+  private log!: {
     info: (msg: string, data?: Record<string, any>) => void;
     warn: (msg: string, data?: Record<string, any>) => void;
     error: (msg: string, data?: Record<string, any>) => void;
@@ -44,6 +45,7 @@ export class EmailMonitor {
     debug: boolean = false
   ) {
     this.channelName = channelName;
+    this.sm = StateManager.forChannel(channelName);
     this.imapClient = new ImapClient(imapConfig, verbose, debug);
     this.watchConfig = watchConfig;
     this.outputConfig = outputConfig;
@@ -59,19 +61,13 @@ export class EmailMonitor {
     };
   }
 
-  /** Ensure StateManager is set to this monitor's channel before any state operation. */
-  private setChannelContext(): void {
-    StateManager.setChannel(this.channelName);
-  }
-
   async start(options: MonitorOptions): Promise<void> {
     this.running = true;
 
     try {
-      this.setChannelContext();
-      await StateManager.ensureInitialized();
-      await StateManager.load();
-      const lastSeq = StateManager.getLastSequenceNumber();
+      await this.sm.ensureInitialized();
+      await this.sm.load();
+      const lastSeq = this.sm.getLastSequenceNumber();
       this.log.info('Resuming sequence-based monitoring', { lastSequenceNumber: lastSeq });
 
       await this.imapClient.connect();
@@ -148,14 +144,13 @@ export class EmailMonitor {
   }
 
   private async checkForNewEmails(options: MonitorOptions): Promise<void> {
-    this.setChannelContext();
     if (!this.imapClient.isConnected()) {
       this.log.warn('Not connected to IMAP server, attempting to reconnect...');
       await this.imapClient.reconnect();
     }
 
     const currentCount = await this.imapClient.getMailboxCount(this.folder);
-    const lastSeq = StateManager.getLastSequenceNumber();
+    const lastSeq = this.sm.getLastSequenceNumber();
     const maxThreshold = this.watchConfig.maxNewEmailThreshold || 50;
     const disableCheck = this.watchConfig.disableConsistencyCheck || false;
 
@@ -206,8 +201,8 @@ export class EmailMonitor {
 
     for (const message of newMessages) {
       await this.processMessage(message, message.seq, options);
-      StateManager.updateSequence(message.seq);
-      await StateManager.save();
+      this.sm.updateSequence(message.seq);
+      await this.sm.save();
     }
 
     const currentInfo = await this.imapClient.getNewestUid(this.folder);
@@ -229,7 +224,7 @@ export class EmailMonitor {
     let processedUids: Set<number>;
 
     try {
-      processedUids = await StateManager.loadProcessedUids();
+      processedUids = await this.sm.loadProcessedUids();
       this.log.info('Loaded processed UID set', { count: processedUids.size });
     } catch (error) {
       this.log.error('Failed to load UID set for recovery', {
@@ -240,17 +235,17 @@ export class EmailMonitor {
 
     const mailbox = await (this.imapClient as any).client.mailboxOpen(this.folder);
     const serverUidValidity = Number(mailbox.uidValidity);
-    const stateUidValidity = Number(StateManager.getState().uidValidity);
+    const stateUidValidity = Number(this.sm.getState().uidValidity);
 
     if (serverUidValidity !== stateUidValidity) {
       this.log.warn('UIDVALIDITY changed, resetting UID set', {
         serverUidValidity,
         stateUidValidity,
       });
-      await StateManager.resetProcessedUids();
+      await this.sm.resetProcessedUids();
       processedUids = new Set();
-      StateManager.updateUidValidity(serverUidValidity);
-      await StateManager.save();
+      this.sm.updateUidValidity(serverUidValidity);
+      await this.sm.save();
     }
 
     logger.info('Fetching all messages for recovery', { totalMessages: currentCount });
@@ -263,11 +258,11 @@ export class EmailMonitor {
 
     for (const msg of newMessages) {
       await this.processMessage(msg, msg.seq, options);
-      await StateManager.save();
+      await this.sm.save();
     }
 
-    StateManager.updateSequence(currentCount);
-    await StateManager.save();
+    this.sm.updateSequence(currentCount);
+    await this.sm.save();
 
     logger.info('Recovery complete', { newMessages: newMessages.length });
   }
@@ -279,7 +274,7 @@ export class EmailMonitor {
 
       this.log.debug('Processing email', { from: fromAddress, subject, uid: imapEmail.uid });
 
-      await StateManager.trackUid(imapEmail.uid);
+      await this.sm.trackUid(imapEmail.uid);
 
       try {
         const emailBody = await this.imapClient.fetchMessageBody(seqNum, this.folder);

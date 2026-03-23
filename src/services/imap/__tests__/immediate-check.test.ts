@@ -121,8 +121,12 @@ Test body content`;
       false
     );
 
-    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
-    (monitor as any).setChannelContext = () => {};
+    // Override the monitor's StateManager instance to use test temp dir
+    const testSm = StateManager.forChannel('email');
+    (testSm as any).stateFilePath = join(tempTestDir, '.state.json');
+    (testSm as any).stateDir = tempTestDir;
+    (testSm as any).migrationDisabled = true;
+    (monitor as any).sm = testSm;
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -187,8 +191,12 @@ Test body content`;
       false
     );
 
-    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
-    (monitor as any).setChannelContext = () => {};
+    // Override the monitor's StateManager instance to use test temp dir
+    const testSm = StateManager.forChannel('email');
+    (testSm as any).stateFilePath = join(tempTestDir, '.state.json');
+    (testSm as any).stateDir = tempTestDir;
+    (testSm as any).migrationDisabled = true;
+    (monitor as any).sm = testSm;
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -242,8 +250,12 @@ Test body content`;
       false
     );
 
-    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
-    (monitor as any).setChannelContext = () => {};
+    // Override the monitor's StateManager instance to use test temp dir
+    const testSm = StateManager.forChannel('email');
+    (testSm as any).stateFilePath = join(tempTestDir, '.state.json');
+    (testSm as any).stateDir = tempTestDir;
+    (testSm as any).migrationDisabled = true;
+    (monitor as any).sm = testSm;
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -297,8 +309,12 @@ Test body content`;
       false
     );
 
-    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
-    (monitor as any).setChannelContext = () => {};
+    // Override the monitor's StateManager instance to use test temp dir
+    const testSm = StateManager.forChannel('email');
+    (testSm as any).stateFilePath = join(tempTestDir, '.state.json');
+    (testSm as any).stateDir = tempTestDir;
+    (testSm as any).migrationDisabled = true;
+    (monitor as any).sm = testSm;
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -350,8 +366,12 @@ Test body content`;
       false
     );
 
-    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
-    (monitor as any).setChannelContext = () => {};
+    // Override the monitor's StateManager instance to use test temp dir
+    const testSm = StateManager.forChannel('email');
+    (testSm as any).stateFilePath = join(tempTestDir, '.state.json');
+    (testSm as any).stateDir = tempTestDir;
+    (testSm as any).migrationDisabled = true;
+    (monitor as any).sm = testSm;
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();

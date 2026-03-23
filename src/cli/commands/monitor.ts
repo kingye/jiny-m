@@ -244,11 +244,10 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     }
 
     // 10. Start all inbound adapters (blocks — starts monitoring loop)
-    for (const adapter of registry.getAllInbound()) {
-      await adapter.start({
+    // 10. Start all inbound adapters concurrently (each blocks in its own monitoring loop)
+    const adapterPromises = registry.getAllInbound().map(adapter => {
+      const promise = adapter.start({
         onMessage: async (message) => {
-          // Display the message
-          // (For email, we'd format it — for now just log)
           logger.info('Message received', {
             channel: message.channel,
             sender: message.senderAddress,
@@ -268,7 +267,11 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 
       activeAdapters.push(adapter);
       logger.info('Inbound adapter started', { channel: adapter.channelName, type: adapter.channelType });
-    }
+      return promise;
+    });
+
+    // Wait for all adapters (they block until stopped)
+    await Promise.all(adapterPromises);
 
     // 11. Register shutdown cleanup (delete session files to prevent stale sessions on restart)
     shutdownCleanup = async () => {

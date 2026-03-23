@@ -369,24 +369,30 @@ async function handleReplyMessage(
 }
 
 /**
- * Create an outbound adapter based on channel type.
- * Loads channel-specific config from the project config.
+ * Create an outbound adapter based on channel name.
+ * Looks up channel config by name, determines type, and creates the adapter.
  */
-function createOutboundAdapter(channel: string, config: any): OutboundAdapter {
-  switch (channel) {
+function createOutboundAdapter(channelName: string, config: any): OutboundAdapter {
+  // Look up channel config by name (multi-channel format)
+  const channelConfig = config.channels?.[channelName];
+  const channelType = channelConfig?.type || 'email';
+
+  switch (channelType) {
     case 'email': {
-      // Support both new (channels.email.outbound) and legacy (smtp) config
-      const smtpConfig = config.channels?.email?.outbound || config.smtp;
+      // Support: channels.{name}.outbound, channels.email.outbound, or legacy smtp
+      const smtpConfig = channelConfig?.outbound
+        || config.channels?.email?.outbound
+        || config.smtp;
       if (!smtpConfig) {
         throw new Error('SMTP/email outbound configuration not found in config');
       }
-      return new EmailOutboundAdapter(smtpConfig);
+      return new EmailOutboundAdapter(channelName, smtpConfig);
     }
     // Future channels:
     // case 'feishu': { ... }
     // case 'slack': { ... }
     default:
-      throw new Error(`Unsupported channel type: ${channel}`);
+      throw new Error(`Unsupported channel type: ${channelType} (channel: ${channelName})`);
   }
 }
 
