@@ -239,11 +239,17 @@ export class ThreadManager {
             .join('\n');
         }
 
-        // If body is empty after stripping commands, inject a note so the AI
-        // knows only commands were executed and should confirm + stop.
+        // If body is empty after stripping commands, send command results directly and skip AI
         if (commandResults.length > 0 && (!message.content.text || !message.content.text.trim())) {
-          const summary = commandResults.join('\n');
-          message.content.text = `[System: The following commands were executed. Confirm the results to the user and stop.]\n${summary}`;
+          const commandReplyText = commandResults.join('\n');
+          const fullReplyText = await this.buildFullReplyText(commandReplyText, message, threadPath, messageDir);
+
+          const adapter = this.channelRegistry.getOutbound(message.channel);
+          await adapter.sendReply(message, fullReplyText);
+          await this.storage.storeReply(threadPath, fullReplyText, messageDir);
+
+          logger.info('Command-only message, replied directly', { thread: threadName });
+          return; // Skip AI
         }
       }
 

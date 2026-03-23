@@ -104,7 +104,7 @@ export class ModelCommandHandler implements CommandHandler {
       try {
         let content = await readFile(configPath, 'utf-8');
         // Strip JSONC comments
-        content = content.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        content = content.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
         const config = JSON.parse(content);
 
         const models: string[] = [];
