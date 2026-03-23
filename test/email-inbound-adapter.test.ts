@@ -29,6 +29,7 @@ function makePattern(overrides: Partial<ChannelPattern> = {}): ChannelPattern {
 
 // Minimal adapter instance (doesn't start IMAP, just uses matching/naming)
 const adapter = new EmailInboundAdapter(
+  'email',
   { host: 'localhost', port: 993, username: 'test', password: 'test', tls: true },
   { checkInterval: 30000, maxRetries: 3 },
 );
@@ -178,5 +179,53 @@ describe('EmailInboundAdapter.deriveThreadName', () => {
     const msg = makeMessage({ topic: '' });
     const name = adapter.deriveThreadName(msg);
     expect(name).toBe('untitled');
+  });
+});
+
+// ============================================================================
+// Multi-channel: channelName propagation
+// ============================================================================
+
+describe('Multi-channel: channelName', () => {
+  test('adapter uses channelName for channel field', () => {
+    const workAdapter = new EmailInboundAdapter(
+      'work',
+      { host: 'localhost', port: 993, username: 'test', password: 'test', tls: true },
+      { checkInterval: 30000, maxRetries: 3 },
+    );
+    expect(workAdapter.channelName).toBe('work');
+    expect(workAdapter.channelType).toBe('email');
+  });
+
+  test('matchMessage returns channelName in match result', () => {
+    const workAdapter = new EmailInboundAdapter(
+      'work',
+      { host: 'localhost', port: 993, username: 'test', password: 'test', tls: true },
+      { checkInterval: 30000, maxRetries: 3 },
+    );
+    const msg = makeMessage({ senderAddress: 'alice@company.com' });
+    const pattern = makePattern({
+      channel: 'work',
+      rules: { sender: { exact: ['alice@company.com'] } },
+    });
+    const result = workAdapter.matchMessage(msg, [pattern]);
+    expect(result).not.toBeNull();
+    expect(result!.channel).toBe('work');
+  });
+
+  test('different adapters have independent channelNames', () => {
+    const workAdapter = new EmailInboundAdapter(
+      'work',
+      { host: 'work.example.com', port: 993, username: 'work@example.com', password: 'w', tls: true },
+      { checkInterval: 30000, maxRetries: 3 },
+    );
+    const personalAdapter = new EmailInboundAdapter(
+      'personal',
+      { host: 'personal.example.com', port: 993, username: 'me@gmail.com', password: 'p', tls: true },
+      { checkInterval: 30000, maxRetries: 3 },
+    );
+    expect(workAdapter.channelName).toBe('work');
+    expect(personalAdapter.channelName).toBe('personal');
+    expect(workAdapter.channelType).toBe(personalAdapter.channelType); // both 'email'
   });
 });

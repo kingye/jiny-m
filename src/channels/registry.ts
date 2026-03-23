@@ -1,7 +1,7 @@
 /**
  * Channel adapter registry.
  *
- * Provides lookup of inbound and outbound adapters by channel type.
+ * Provides lookup of inbound and outbound adapters by channel name.
  * Used by MessageRouter (to delegate matching/naming) and ThreadManager
  * (for fallback reply sending) and MCP reply-tool (to find the right
  * outbound adapter for a reply).
@@ -11,37 +11,37 @@ import type { ChannelType, InboundAdapter, OutboundAdapter } from './types';
 import { logger } from '../core/logger';
 
 export class ChannelRegistry {
-  private inboundAdapters = new Map<ChannelType, InboundAdapter>();
-  private outboundAdapters = new Map<ChannelType, OutboundAdapter>();
+  private inboundAdapters = new Map<string, InboundAdapter>();
+  private outboundAdapters = new Map<string, OutboundAdapter>();
 
   /**
-   * Register an inbound adapter for a channel type.
-   * Only one adapter per channel type is allowed.
+   * Register an inbound adapter for a channel name.
+   * Multiple adapters with different names allowed (e.g., work, personal).
    */
   registerInbound(adapter: InboundAdapter): void {
-    if (this.inboundAdapters.has(adapter.channelType)) {
-      logger.warn('Replacing existing inbound adapter', { channel: adapter.channelType });
+    if (this.inboundAdapters.has(adapter.channelName)) {
+      logger.warn('Replacing existing inbound adapter', { channel: adapter.channelName });
     }
-    this.inboundAdapters.set(adapter.channelType, adapter);
-    logger.info('Inbound adapter registered', { channel: adapter.channelType });
+    this.inboundAdapters.set(adapter.channelName, adapter);
+    logger.info('Inbound adapter registered', { channel: adapter.channelName, type: adapter.channelType });
   }
 
   /**
-   * Register an outbound adapter for a channel type.
+   * Register an outbound adapter for a channel name.
    */
   registerOutbound(adapter: OutboundAdapter): void {
-    if (this.outboundAdapters.has(adapter.channelType)) {
-      logger.warn('Replacing existing outbound adapter', { channel: adapter.channelType });
+    if (this.outboundAdapters.has(adapter.channelName)) {
+      logger.warn('Replacing existing outbound adapter', { channel: adapter.channelName });
     }
-    this.outboundAdapters.set(adapter.channelType, adapter);
-    logger.info('Outbound adapter registered', { channel: adapter.channelType });
+    this.outboundAdapters.set(adapter.channelName, adapter);
+    logger.info('Outbound adapter registered', { channel: adapter.channelName, type: adapter.channelType });
   }
 
   /**
-   * Get the inbound adapter for a channel type.
+   * Get the inbound adapter for a channel name.
    * Throws if not registered.
    */
-  getInbound(channel: ChannelType): InboundAdapter {
+  getInbound(channel: string): InboundAdapter {
     const adapter = this.inboundAdapters.get(channel);
     if (!adapter) {
       throw new Error(`No inbound adapter registered for channel: ${channel}`);
@@ -50,10 +50,10 @@ export class ChannelRegistry {
   }
 
   /**
-   * Get the outbound adapter for a channel type.
+   * Get the outbound adapter for a channel name.
    * Throws if not registered.
    */
-  getOutbound(channel: ChannelType): OutboundAdapter {
+  getOutbound(channel: string): OutboundAdapter {
     const adapter = this.outboundAdapters.get(channel);
     if (!adapter) {
       throw new Error(`No outbound adapter registered for channel: ${channel}`);
@@ -76,16 +76,16 @@ export class ChannelRegistry {
   }
 
   /**
-   * Check if an inbound adapter is registered for a channel type.
+   * Check if an inbound adapter is registered for a channel name.
    */
-  hasInbound(channel: ChannelType): boolean {
+  hasInbound(channel: string): boolean {
     return this.inboundAdapters.has(channel);
   }
 
   /**
-   * Check if an outbound adapter is registered for a channel type.
+   * Check if an outbound adapter is registered for a channel name.
    */
-  hasOutbound(channel: ChannelType): boolean {
+  hasOutbound(channel: string): boolean {
     return this.outboundAdapters.has(channel);
   }
 }

@@ -62,38 +62,86 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     // 2. Create channel registry
     const registry = new ChannelRegistry();
 
-    // 3. Register email channel (if configured)
-    const emailConfig = configManager.getEmailChannelConfig();
-    if (emailConfig) {
-      const watchConfig = configManager.getEffectiveWatchConfig();
+    // 3. Register all configured channels
+    const allChannels = configManager.getAllChannels();
+    const channelNames = Object.keys(allChannels);
+
+    for (const channelName of channelNames) {
+      const channelConfig = allChannels[channelName];
+      if (!channelConfig || channelConfig.type !== 'email') continue;
+      if (!channelConfig.inbound && !channelConfig.outbound) continue;
+
+      logger.info(`Setting up channel: ${channelName}`);
+
+      // Get channel-specific watch config
+      const watchConfig = configManager.getEffectiveWatchConfig(channelName);
 
       // Inbound adapter (IMAP)
-      const emailInbound = new EmailInboundAdapter(
-        emailConfig.inbound,
-        watchConfig,
-        {
-          outputConfig: configManager.getOutputConfig(),
-          verbose: options.verbose,
-          debug: options.debug,
-        },
-      );
-      registry.registerInbound(emailInbound);
+      if (channelConfig.inbound) {
+        const emailInbound = new EmailInboundAdapter(
+          channelName,
+          channelConfig.inbound,
+          watchConfig,
+          {
+            outputConfig: configManager.getOutputConfig(),
+            verbose: options.verbose,
+            debug: options.debug,
+          },
+        );
+        registry.registerInbound(emailInbound);
+        logger.info(`Email inbound adapter registered for channel: ${channelName}`);
+      }
 
       // Outbound adapter (SMTP) — needed for reply and/or alerting
-      const emailReplyConfig = configManager.getReplyConfig();
-      const earlyAlertingConfig = configManager.getAlertingConfig();
-      const needsOutbound = (emailReplyConfig.enabled || earlyAlertingConfig?.enabled) && emailConfig.outbound;
+      const replyConfig = configManager.getReplyConfig();
+      const alertingConfig = configManager.getAlertingConfig();
+      const needsOutbound = (replyConfig.enabled || alertingConfig?.enabled) && channelConfig.outbound;
 
-      if (needsOutbound) {
-        const emailOutbound = new EmailOutboundAdapter(emailConfig.outbound);
+      if (needsOutbound && channelConfig.outbound) {
+        const emailOutbound = new EmailOutboundAdapter(channelName, channelConfig.outbound);
         try {
           await emailOutbound.connect();
           registry.registerOutbound(emailOutbound);
-          logger.info('Email outbound (SMTP) ready');
+          logger.info(`Email outbound (SMTP) ready for channel: ${channelName}`);
         } catch (error) {
           logger.error('Failed to connect email outbound (SMTP)', {
+            channel: channelName,
             error: error instanceof Error ? error.message : 'Unknown',
           });
+        }
+      }
+    }
+
+    // Legacy support: also check for single-channel config via getEmailChannelConfig
+    if (registry.getAllInbound().length === 0) {
+      const emailConfig = configManager.getEmailChannelConfig();
+      if (emailConfig) {
+        const watchConfig = configManager.getEffectiveWatchConfig();
+
+        const emailInbound = new EmailInboundAdapter(
+          'email',
+          emailConfig.inbound,
+          watchConfig,
+          {
+            outputConfig: configManager.getOutputConfig(),
+            verbose: options.verbose,
+            debug: options.debug,
+          },
+        );
+        registry.registerInbound(emailInbound);
+
+        const replyConfig = configManager.getReplyConfig();
+        const alertingConfig = configManager.getAlertingConfig();
+        if ((replyConfig.enabled || alertingConfig?.enabled) && emailConfig.outbound) {
+          const emailOutbound = new EmailOutboundAdapter('email', emailConfig.outbound);
+          try {
+            await emailOutbound.connect();
+            registry.registerOutbound(emailOutbound);
+          } catch (error) {
+            logger.error('Failed to connect email outbound (SMTP)', {
+              error: error instanceof Error ? error.message : 'Unknown',
+            });
+          }
         }
       }
     }
@@ -107,6 +155,15 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const workspaceConfig = configManager.getWorkspaceConfig();
     const storage = new MessageStorage(workspaceConfig);
     await storage.init();
+
+    // 4b. Initialize channel-specific workspaces
+    for (const channelName of channelNames) {
+      const channelConfig = allChannels[channelName];
+      if (channelConfig?.workspace) {
+        storage.setChannelWorkspace(channelName, channelConfig.workspace);
+      }
+      await storage.initChannelWorkspace(channelName);
+    }
 
     // 5. Create OpenCode service (if opencode mode)
     const replyConfig = configManager.getReplyConfig();
@@ -135,7 +192,10 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const alertingConfig = configManager.getAlertingConfig();
     if (alertingConfig?.enabled) {
       try {
-        const emailOutbound = registry.getOutbound('email');
+        // Get the first available outbound adapter for alerting
+        const outboundAdapters = registry.getAllOutbound();
+        const emailOutbound = outboundAdapters[0];
+        if (!emailOutbound) throw new Error('No outbound adapters available');
         const workspaceFolder = configManager.getWorkspaceConfig().folder;
         const alertService = new AlertService(emailOutbound, alertingConfig, workspaceFolder, threadManager);
         alertService.start();
@@ -159,8 +219,9 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     // 9. Send startup notification email (before starting inbound adapters which block)
     if (activeAlertService && alertingConfig?.enabled) {
       try {
-        const emailOutbound = registry.getOutbound('email');
-        if (emailOutbound.sendAlert) {
+        const outboundAdapters = registry.getAllOutbound();
+        const emailOutbound = outboundAdapters[0];
+        if (emailOutbound?.sendAlert) {
           const recipient = alertingConfig.healthCheck?.recipient || alertingConfig.recipient;
           const subject = `${alertingConfig.subjectPrefix || 'Jiny-M'}: Started v${pkg.version}`;
           const body = [
@@ -206,7 +267,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       });
 
       activeAdapters.push(adapter);
-      logger.info('Inbound adapter started', { channel: adapter.channelType });
+      logger.info('Inbound adapter started', { channel: adapter.channelName, type: adapter.channelType });
     }
 
     // 11. Register shutdown cleanup (delete session files to prevent stale sessions on restart)

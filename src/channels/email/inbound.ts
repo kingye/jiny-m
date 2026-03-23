@@ -40,6 +40,7 @@ interface EmailRules {
 
 export class EmailInboundAdapter implements InboundAdapter {
   readonly channelType: ChannelType = 'email';
+  readonly channelName: string;
 
   private imapConfig: ImapConfig;
   private watchConfig: WatchConfig;
@@ -49,10 +50,12 @@ export class EmailInboundAdapter implements InboundAdapter {
   private debug: boolean;
 
   constructor(
+    channelName: string,
     imapConfig: ImapConfig,
     watchConfig: WatchConfig,
     options?: { outputConfig?: OutputConfig; verbose?: boolean; debug?: boolean },
   ) {
+    this.channelName = channelName;
     this.imapConfig = imapConfig;
     this.watchConfig = watchConfig;
     this.outputConfig = options?.outputConfig || { format: 'text', includeHeaders: false, includeAttachments: true };
@@ -78,7 +81,9 @@ export class EmailInboundAdapter implements InboundAdapter {
    * Rules: sender (exact, domain, regex) + subject (prefix, regex).
    */
   matchMessage(message: InboundMessage, patterns: ChannelPattern[]): PatternMatch | null {
-    const emailPatterns = patterns.filter(p => p.channel === 'email' && p.enabled !== false);
+    const emailPatterns = patterns.filter(p =>
+      (p.channel === this.channelName || p.channel === this.channelType) && p.enabled !== false
+    );
 
     for (const pattern of emailPatterns) {
       const rules = pattern.rules as EmailRules;
@@ -104,7 +109,7 @@ export class EmailInboundAdapter implements InboundAdapter {
       if (senderConditionMet && subjectConditionMet) {
         return {
           patternName: pattern.name,
-          channel: 'email',
+          channel: this.channelName,
           matches,
         };
       }
@@ -126,6 +131,7 @@ export class EmailInboundAdapter implements InboundAdapter {
     };
 
     this.monitor = new EmailMonitor(
+      this.channelName,
       this.imapConfig,
       this.watchConfig,
       [catchAllPattern],
@@ -186,7 +192,7 @@ export class EmailInboundAdapter implements InboundAdapter {
 
     return {
       id: email.id || `email-${email.uid}`,
-      channel: 'email',
+      channel: this.channelName,
       channelUid: String(email.uid),
       sender,
       senderAddress,

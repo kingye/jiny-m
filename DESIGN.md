@@ -963,32 +963,37 @@ Each directory contains:
 ```json
 {
   "channels": {
-    "email": {
+    "283a": {
+      "type": "email",
       "inbound": {
-        "host": "imap.163.com",
+        "host": "${IMAP_HOST}",
         "port": 993,
         "tls": true,
-        "username": "jiny283@163.com",
+        "authTimeout": 30000,
+        "username": "${IMAP_USER}",
         "password": "${IMAP_PASSWORD}"
       },
       "outbound": {
-        "host": "smtp.163.com",
+        "host": "${SMTP_HOST}",
         "port": 465,
         "secure": true,
-        "username": "jiny283@163.com",
+        "username": "${SMTP_USER}",
         "password": "${SMTP_PASSWORD}"
       },
       "watch": {
-        "pollInterval": 30000,
-        "folder": "INBOX",
-        "useIdle": true
-      }
+        "checkInterval": 30,
+        "maxRetries": 5,
+        "useIdle": false,
+        "folder": "INBOX"
+      },
+      "workspace": "./workspace"
     }
   },
   "patterns": [
     {
       "name": "sap",
-      "channel": "email",
+      "channel": "283a",
+      "enabled": true,
       "rules": {
         "sender": { "exact": ["kingye@petalmail.com"] },
         "subject": { "prefix": ["jiny"] }
@@ -997,13 +1002,10 @@ Each directory contains:
         "enabled": true,
         "allowedExtensions": [".pdf", ".pptx", ".docx", ".xlsx", ".png", ".jpg", ".txt", ".md"],
         "maxFileSize": "25mb",
-        "maxAttachmentsPerEmail": 10
+        "maxAttachmentsPerMessage": 10
       }
     }
   ],
-  "workspace": {
-    "folder": "./workspace"
-  },
   "worker": {
     "maxConcurrentThreads": 3,
     "maxQueueSizePerThread": 10
@@ -1025,6 +1027,11 @@ Each directory contains:
   },
   "output": {
     "format": "text"
+  },
+  "alerting": {
+    "enabled": true,
+    "recipient": "kingye@petalmail.com",
+    "batchIntervalMinutes": 5
   }
 }
 ```
@@ -1033,22 +1040,32 @@ Each directory contains:
 
 ```typescript
 interface Config {
-  channels: {
-    email?: EmailChannelConfig;
-    feishu?: FeiShuChannelConfig;     // future
-  };
-  patterns: ChannelPattern[];
-  workspace: WorkspaceConfig;
+  channels: Record<string, ChannelConfig>;  // Named channels: "work", "personal", etc.
+  patterns?: ChannelPattern[];               // Global patterns (applies to all channels)
+  workspace?: WorkspaceConfig;               // Global workspace (can be overridden per-channel)
   worker?: WorkerConfig;
   reply: ReplyConfig;
   alerting?: AlertingConfig;
   output?: OutputConfig;
 }
 
+interface ChannelConfig {
+  type: 'email' | 'feishu' | string;
+  inbound?: ImapConfig;
+  outbound?: SmtpConfig;
+  watch?: WatchConfig;
+  patterns?: ChannelPattern[];               // Channel-specific patterns
+  workspace?: string;                         // Channel-specific workspace path
+  reply?: Partial<ReplyConfig>;               // Channel-specific reply settings
+}
+
 interface EmailChannelConfig {
+  type: 'email';
   inbound: ImapConfig;
   outbound: SmtpConfig;
   watch?: WatchConfig;
+  patterns?: ChannelPattern[];
+  workspace?: string;
 }
 
 interface WorkerConfig {
@@ -1086,12 +1103,131 @@ interface AttachmentConfig {
 ```
 .jiny/
 ├── config.json                       # Main config
-└── email/                            # Email channel state
+└── <channel-name>/                   # Per-channel directory (e.g., "283a", "work")
     ├── .state.json                   # { lastSequenceNumber, lastProcessedTimestamp, migrationVersion }
     └── .processed-uids.txt           # One UID per line, append-only
 ```
 
 Each channel manages its own state independently. For email, state tracks IMAP sequence numbers and processed UIDs. For FeiShu (future), state would track webhook cursors or message timestamps.
+
+**Note:** The per-channel workspace (thread directories) is stored at the path specified by `channel.workspace` in config (e.g., `./workspace` relative to project root), not inside `.jiny/`. This keeps user content separate from internal state.
+
+### Multi-Mailbox Support
+
+Jiny-M supports multiple email accounts (mailboxes) running in a single process. Each mailbox is configured as a separate channel with its own IMAP/SMTP configuration, patterns, and workspace.
+
+#### Config Structure
+
+```json
+{
+  "channels": {
+    "work": {
+      "type": "email",
+      "inbound": {
+        "host": "imap.company.com",
+        "port": 993,
+        "tls": true,
+        "username": "me@company.com",
+        "password": "${IMAP_PASSWORD}"
+      },
+      "outbound": {
+        "host": "smtp.company.com",
+        "port": 465,
+        "secure": true,
+        "username": "me@company.com",
+        "password": "${SMTP_PASSWORD}"
+      },
+      "watch": {
+        "pollInterval": 30000,
+        "folder": "INBOX",
+        "useIdle": true
+      },
+      "patterns": [
+        {
+          "name": "support",
+          "rules": {
+            "sender": { "domain": ["company.com"] }
+          }
+        }
+      ],
+      "workspace": "workspace/"
+    },
+    "personal": {
+      "type": "email",
+      "inbound": { ... },
+      "outbound": { ... },
+      "patterns": [...],
+      "workspace": "workspace/"
+    }
+  },
+  "worker": {
+    "maxConcurrentThreads": 3,
+    "maxQueueSizePerThread": 10
+  },
+  "reply": { ... },
+  "alerting": { ... },
+  "output": { ... }
+}
+```
+
+#### Channel Configuration Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Channel type (currently `"email"`) |
+| `inbound` | No | IMAP configuration for receiving emails |
+| `outbound` | No | SMTP configuration for sending replies |
+| `watch` | No | Email polling settings (checkInterval, folder, useIdle, maxRetries) |
+| `patterns` | No | Array of pattern definitions for this channel |
+| `workspace` | No | Workspace directory path (e.g., `./workspace`) |
+| `reply` | No | Channel-specific reply settings (overrides global) |
+
+**Watch config fields:**
+| Field | Default | Description |
+|-------|---------|-------------|
+| `checkInterval` | 30 | Polling interval in seconds |
+| `maxRetries` | 5 | Max consecutive failures before giving up |
+| `useIdle` | false | Use IMAP IDLE instead of polling |
+| `folder` | "INBOX" | Mailbox folder to monitor |
+
+#### Directory Structure (Multi-Mailbox)
+
+**Per-channel state** in `.jiny/<channel-name>/`:
+```
+<project-root>/
+├── config.json                    # Master config with channels{}
+├── .jiny/
+│   ├── config.json                # Main config (copy or reference)
+│   └── 283a/                      # Channel: 283a
+│       ├── .state.json            # IMAP state for 283a mailbox
+│       └── .processed-uids.txt    # Processed UIDs
+└── workspace/                     # Channel workspace (from config: channels.283a.workspace)
+    └── <thread-dir>/
+        ├── messages/              # Per-message directories
+        ├── .jiny/                 # Thread internal state
+        │   ├── session.json
+        │   ├── model-override
+        │   ├── mode-override
+        │   └── reply-sent.flag
+        ├── opencode.json
+        └── system.md              # Optional thread-specific prompt
+```
+
+#### Behavior
+
+- **Single process**: One jiny-m instance monitors all configured mailboxes concurrently
+- **Independent state**: Each mailbox has its own IMAP connection, processed UIDs, and thread storage
+- **Channel isolation**: Messages and threads never mix between mailboxes
+- **Concurrent processing**: All channels share the same worker pool (configured via `worker` settings)
+- **Global settings**: `worker`, `reply`, `alerting`, and `output` apply to all channels unless overridden per-channel
+- **Backward compatibility**: Legacy `.jiny/email/` and `workspace/` paths are still supported
+
+#### Migration from Single-Mailbox
+
+Existing single-mailbox configs are automatically migrated:
+- The existing `channels.email` can be renamed to a channel named `"283a"` (or any custom name)
+- State files in `.jiny/email/` should be moved to `{channel-name}/.email/`
+- Workspace continues to use the configured `workspace.folder` or channel-specific workspace
 
 ### Backward Compatibility
 
