@@ -9,6 +9,8 @@ import {
   parseStoredReply,
   buildThreadTrail,
   prepareBodyForQuoting,
+  formatQuotedReply,
+  formatDateTimeISO,
 } from "../src/core/email-parser";
 
 describe("deriveThreadName", () => {
@@ -291,52 +293,137 @@ This is the AI's response.
 describe("buildThreadTrail", () => {
   let tempDir: string;
 
+  // Helper: create a received.md in a message dir
+  const mkReceived = async (dir: string, sender: string, ts: string, body: string) => {
+    await writeFile(join(tempDir, "messages", dir, "received.md"),
+      `---\ntopic: "Test"\ntimestamp: "${ts}"\n---\n\n## ${sender} (10:00 AM)\n\n${body}\n\n--- `);
+  };
+
+  // Helper: create a reply.md in a message dir
+  const mkReply = async (dir: string, body: string) => {
+    await writeFile(join(tempDir, "messages", dir, "reply.md"),
+      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\n${body}\n\n--- `);
+  };
+
   beforeEach(async () => {
     tempDir = join(tmpdir(), `jiny-trail-test-${Date.now()}`);
-    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
-    await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
   });
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  test("reads interleaved received.md and reply.md", async () => {
-    // Older message dir
-    await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "received.md"),
-      `---\ntopic: "First"\ntimestamp: "2026-03-22T10:00:00.000Z"\n---\n\n## Alice (10:00 AM)\n\nHello from Alice.\n\n--- `);
-    await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "reply.md"),
-      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\nHello Alice, I can help!\n\n--- `);
-
-    // Newer message dir
-    await writeFile(join(tempDir, "messages", "2026-03-22_11-00-00", "received.md"),
-      `---\ntopic: "Second"\ntimestamp: "2026-03-22T11:00:00.000Z"\n---\n\n## Alice (11:00 AM)\n\nFollow-up question.\n\n--- `);
+  test("ordering: reply comes BEFORE received within each directory", async () => {
+    // Single dir with both received and reply
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "User message.");
+    await mkReply("2026-03-22_10-00-00", "AI response.");
 
     const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
 
-    // Most recent first: newer received, then older received + reply
-    expect(trail.length).toBe(3);
-    expect(trail[0]!.bodyText).toContain("Follow-up question");
-    expect(trail[0]!.type).toBe("received");
-    expect(trail[1]!.bodyText).toContain("Hello from Alice");
+    expect(trail.length).toBe(2);
+    expect(trail[0]!.type).toBe("reply");
+    expect(trail[0]!.bodyText).toBe("AI response.");
     expect(trail[1]!.type).toBe("received");
-    expect(trail[2]!.bodyText).toContain("Hello Alice, I can help");
-    expect(trail[2]!.type).toBe("reply");
+    expect(trail[1]!.bodyText).toBe("User message.");
+  });
+
+  test("ordering: full 3-directory scenario matches expected email trail", async () => {
+    // Simulate 3 message directories (oldest to newest):
+    //   dir1 (10:00) — received + reply
+    //   dir2 (11:00) — received + reply
+    //   dir3 (12:00) — received only (current message, being replied to now)
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
+    await mkdir(join(tempDir, "messages", "2026-03-22_12-00-00"), { recursive: true });
+
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "Message 1 from Alice.");
+    await mkReply("2026-03-22_10-00-00", "Reply 1 from AI.");
+    await mkReceived("2026-03-22_11-00-00", "Alice", "2026-03-22T11:00:00.000Z", "Message 2 from Alice.");
+    await mkReply("2026-03-22_11-00-00", "Reply 2 from AI.");
+    await mkReceived("2026-03-22_12-00-00", "Alice", "2026-03-22T12:00:00.000Z", "Message 3 from Alice (current).");
+
+    // Call with includeCurrentMessage — simulates what prepareBodyForQuoting does
+    const trail = await buildThreadTrail(tempDir, {
+      maxEntries: 10,
+      includeCurrentMessage: {
+        sender: "Alice",
+        timestamp: new Date("2026-03-22T12:00:00.000Z"),
+        topic: "Test",
+        bodyText: "Message 3 from Alice (current).",
+      },
+    });
+
+    // Expected order:
+    //   [0] current received  (from includeCurrentMessage)
+    //   [1] dir2 reply        (AI Reply 2 — most recent historical dir)
+    //   [2] dir2 received     (Message 2)
+    //   [3] dir1 reply        (AI Reply 1 — older dir)
+    //   [4] dir1 received     (Message 1)
+    expect(trail.length).toBe(5);
+    expect(trail[0]!.type).toBe("received");
+    expect(trail[0]!.bodyText).toContain("Message 3 from Alice (current)");
+    expect(trail[1]!.type).toBe("reply");
+    expect(trail[1]!.bodyText).toBe("Reply 2 from AI.");
+    expect(trail[2]!.type).toBe("received");
+    expect(trail[2]!.bodyText).toBe("Message 2 from Alice.");
+    expect(trail[3]!.type).toBe("reply");
+    expect(trail[3]!.bodyText).toBe("Reply 1 from AI.");
+    expect(trail[4]!.type).toBe("received");
+    expect(trail[4]!.bodyText).toBe("Message 1 from Alice.");
+  });
+
+  test("ordering: directory with only received (no reply) still works", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
+
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "First message.");
+    await mkReply("2026-03-22_10-00-00", "AI reply.");
+    // dir2: received only, no reply.md
+    await mkReceived("2026-03-22_11-00-00", "Alice", "2026-03-22T11:00:00.000Z", "Second message.");
+
+    const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
+
+    // dir2 (most recent): only received (no reply)
+    // dir1: reply then received
+    expect(trail.length).toBe(3);
+    expect(trail[0]!.type).toBe("received");
+    expect(trail[0]!.bodyText).toBe("Second message.");
+    expect(trail[1]!.type).toBe("reply");
+    expect(trail[1]!.bodyText).toBe("AI reply.");
+    expect(trail[2]!.type).toBe("received");
+    expect(trail[2]!.bodyText).toBe("First message.");
+  });
+
+  test("ordering: directory with only reply (no received) still works", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    // Only reply.md, no received.md
+    await mkReply("2026-03-22_10-00-00", "Orphan AI reply.");
+
+    const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
+    expect(trail.length).toBe(1);
+    expect(trail[0]!.type).toBe("reply");
+    expect(trail[0]!.bodyText).toBe("Orphan AI reply.");
   });
 
   test("respects maxEntries limit", async () => {
-    await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "received.md"),
-      `---\ntopic: "First"\ntimestamp: "2026-03-22T10:00:00.000Z"\n---\n\n## Alice (10:00 AM)\n\nMessage 1.\n\n--- `);
-    await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "reply.md"),
-      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\nReply 1.\n\n--- `);
-    await writeFile(join(tempDir, "messages", "2026-03-22_11-00-00", "received.md"),
-      `---\ntopic: "Second"\ntimestamp: "2026-03-22T11:00:00.000Z"\n---\n\n## Alice (11:00 AM)\n\nMessage 2.\n\n--- `);
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "Message 1.");
+    await mkReply("2026-03-22_10-00-00", "Reply 1.");
+    await mkReceived("2026-03-22_11-00-00", "Alice", "2026-03-22T11:00:00.000Z", "Message 2.");
+    await mkReply("2026-03-22_11-00-00", "Reply 2.");
 
-    const trail = await buildThreadTrail(tempDir, { maxEntries: 2 });
-    expect(trail.length).toBe(2);
+    const trail = await buildThreadTrail(tempDir, { maxEntries: 3 });
+    // dir2: reply + received = 2 entries, dir1: reply = 1 entry → total 3
+    expect(trail.length).toBe(3);
+    expect(trail[0]!.bodyText).toBe("Reply 2.");
+    expect(trail[1]!.bodyText).toBe("Message 2.");
+    expect(trail[2]!.bodyText).toBe("Reply 1.");
   });
 
   test("strips quoted history from received.md", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
     const receivedWithQuotes = `---
 topic: "Test"
 timestamp: "2026-03-22T10:00:00.000Z"
@@ -359,6 +446,7 @@ On 2026-03-21 Bob wrote:
   });
 
   test("extracts only AI text from reply.md (no quoted blocks)", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
     const replyWithQuotes = `---
 type: auto-reply
 ---
@@ -368,7 +456,7 @@ type: auto-reply
 The AI response text.
 
 ---
-### Alice (10:00 AM)
+### Alice (2026-03-22 10:00)
 > Test Subject
 
 > This is quoted and should not appear.
@@ -383,7 +471,25 @@ The AI response text.
     expect(replyEntry!.bodyText).not.toContain("quoted and should not appear");
   });
 
-  test("includes current message when provided", async () => {
+  test("uses dir name as reply timestamp (not current time)", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_14-30-00"), { recursive: true });
+    await mkReply("2026-03-22_14-30-00", "Reply text.");
+
+    const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
+    expect(trail.length).toBe(1);
+    // Timestamp should be derived from dir name, not Date.now()
+    const ts = trail[0]!.timestamp;
+    expect(ts.getFullYear()).toBe(2026);
+    expect(ts.getMonth()).toBe(2); // March = 2
+    expect(ts.getDate()).toBe(22);
+    expect(ts.getHours()).toBe(14);
+    expect(ts.getMinutes()).toBe(30);
+  });
+
+  test("includes current message as first entry when provided", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "Old message.");
+
     const trail = await buildThreadTrail(tempDir, {
       maxEntries: 10,
       includeCurrentMessage: {
@@ -394,24 +500,38 @@ The AI response text.
       },
     });
 
-    expect(trail.length).toBeGreaterThanOrEqual(1);
     expect(trail[0]!.sender).toBe("Bob");
     expect(trail[0]!.bodyText).toBe("This is the current message.");
     expect(trail[0]!.type).toBe("received");
   });
 
   test("truncates per-entry when maxPerEntry is set", async () => {
-    await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "received.md"),
-      `---\ntopic: "Test"\ntimestamp: "2026-03-22T10:00:00.000Z"\n---\n\n## Alice (10:00 AM)\n\n${"A".repeat(500)}\n\n--- `);
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "A".repeat(500));
 
     const trail = await buildThreadTrail(tempDir, { maxEntries: 10, maxPerEntry: 100 });
     expect(trail.length).toBe(1);
-    expect(trail[0]!.bodyText.length).toBeLessThanOrEqual(125); // truncateText adds "..." marker
+    expect(trail[0]!.bodyText.length).toBeLessThanOrEqual(125);
   });
 
   test("returns empty trail for nonexistent thread", async () => {
     const trail = await buildThreadTrail("/nonexistent/path", { maxEntries: 10 });
     expect(trail).toEqual([]);
+  });
+
+  test("excludeMessageDir skips the specified directory", async () => {
+    await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
+    await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
+    await mkReceived("2026-03-22_10-00-00", "Alice", "2026-03-22T10:00:00.000Z", "Keep this.");
+    await mkReceived("2026-03-22_11-00-00", "Alice", "2026-03-22T11:00:00.000Z", "Skip this.");
+
+    const trail = await buildThreadTrail(tempDir, {
+      maxEntries: 10,
+      excludeMessageDir: "2026-03-22_11-00-00",
+    });
+
+    expect(trail.length).toBe(1);
+    expect(trail[0]!.bodyText).toBe("Keep this.");
   });
 });
 
@@ -424,7 +544,6 @@ describe("prepareBodyForQuoting", () => {
 
   beforeEach(async () => {
     tempDir = join(tmpdir(), `jiny-quoting-test-${Date.now()}`);
-    // Create two historical message dirs + a "current" one (most recent, will be skipped)
     await mkdir(join(tempDir, "messages", "2026-03-22_10-00-00"), { recursive: true });
     await mkdir(join(tempDir, "messages", "2026-03-22_11-00-00"), { recursive: true });
     await mkdir(join(tempDir, "messages", "2026-03-22_12-00-00"), { recursive: true });
@@ -434,30 +553,49 @@ describe("prepareBodyForQuoting", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  test("produces interleaved quoted blocks", async () => {
-    // Oldest dir — historical received + reply
+  test("produces correctly ordered quoted blocks: current → reply → received → ...", async () => {
+    // dir1: oldest — received + reply
     await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "received.md"),
-      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T10:00:00.000Z"\n---\n\n## Alice (10:00 AM)\n\nOlder message from Alice.\n\n--- `);
+      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T10:00:00.000Z"\n---\n\n## Alice (10:00 AM)\n\nFirst message.\n\n--- `);
     await writeFile(join(tempDir, "messages", "2026-03-22_10-00-00", "reply.md"),
-      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\nAI replied to Alice.\n\n--- `);
+      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\nFirst AI reply.\n\n--- `);
 
-    // Middle dir — another historical received
+    // dir2: middle — received + reply
     await writeFile(join(tempDir, "messages", "2026-03-22_11-00-00", "received.md"),
-      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T11:00:00.000Z"\n---\n\n## Alice (11:00 AM)\n\nMiddle message.\n\n--- `);
+      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T11:00:00.000Z"\n---\n\n## Alice (11:00 AM)\n\nSecond message.\n\n--- `);
+    await writeFile(join(tempDir, "messages", "2026-03-22_11-00-00", "reply.md"),
+      `---\ntype: auto-reply\n---\n\n## AI Assistant\n\nSecond AI reply.\n\n--- `);
 
-    // Most recent dir — this is the "current" message dir, will be skipped by prepareBodyForQuoting
+    // dir3: most recent — current message dir (will be skipped, replaced by includeCurrentMessage)
     await writeFile(join(tempDir, "messages", "2026-03-22_12-00-00", "received.md"),
-      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T12:00:00.000Z"\n---\n\n## Alice (12:00 PM)\n\nLatest message (skipped as current).\n\n--- `);
+      `---\ntopic: "Hello"\ntimestamp: "2026-03-22T12:00:00.000Z"\n---\n\n## Alice (12:00 PM)\n\nLatest (skipped).\n\n--- `);
 
     const result = await prepareBodyForQuoting(
       tempDir,
-      { sender: "Alice", timestamp: new Date(), topic: "Hello", bodyText: "New message from Alice." },
+      { sender: "Alice", timestamp: new Date("2026-03-22T12:00:00.000Z"), topic: "Hello", bodyText: "Current message from Alice." },
     );
 
-    // Should contain current message and historical entries
-    expect(result).toContain("New message from Alice");
-    expect(result).toContain("Older message from Alice");
-    expect(result).toContain("AI replied to Alice");
+    // Verify ordering in the output string
+    const currentPos = result.indexOf("Current message from Alice");
+    const reply2Pos = result.indexOf("Second AI reply");
+    const msg2Pos = result.indexOf("Second message");
+    const reply1Pos = result.indexOf("First AI reply");
+    const msg1Pos = result.indexOf("First message");
+
+    expect(currentPos).toBeGreaterThanOrEqual(0);
+    expect(reply2Pos).toBeGreaterThanOrEqual(0);
+    expect(msg2Pos).toBeGreaterThanOrEqual(0);
+    expect(reply1Pos).toBeGreaterThanOrEqual(0);
+    expect(msg1Pos).toBeGreaterThanOrEqual(0);
+
+    // Order: current < reply2 < msg2 < reply1 < msg1
+    expect(currentPos).toBeLessThan(reply2Pos);
+    expect(reply2Pos).toBeLessThan(msg2Pos);
+    expect(msg2Pos).toBeLessThan(reply1Pos);
+    expect(reply1Pos).toBeLessThan(msg1Pos);
+
+    // Should NOT contain the skipped current dir's content
+    expect(result).not.toContain("Latest (skipped)");
   });
 
   test("returns empty string when no messages", async () => {
@@ -471,5 +609,61 @@ describe("prepareBodyForQuoting", () => {
 
     expect(result).toBe("");
     await rm(emptyDir, { recursive: true, force: true });
+  });
+});
+
+// ============================================================================
+// formatQuotedReply — date+time format
+// ============================================================================
+
+describe("formatQuotedReply", () => {
+  test("includes date in YYYY-MM-DD HH:MM format", () => {
+    const result = formatQuotedReply(
+      "Alice",
+      new Date("2026-03-22T14:30:00.000Z"),
+      "Subject",
+      "Hello world",
+    );
+
+    // Should contain ISO-like date+time, not just time
+    expect(result).toContain("2026-03-22");
+    expect(result).toContain("### Alice (2026-03-22");
+  });
+
+  test("handles string timestamp", () => {
+    const result = formatQuotedReply(
+      "Bob",
+      "2026-03-23T09:15:00.000Z",
+      "Topic",
+      "Message body",
+    );
+
+    expect(result).toContain("2026-03-23");
+    expect(result).toContain("> Topic");
+    expect(result).toContain("> Message body");
+  });
+
+  test("returns empty string for empty body", () => {
+    expect(formatQuotedReply("Alice", new Date(), "Subject", "")).toBe("");
+    expect(formatQuotedReply("Alice", new Date(), "Subject", "   ")).toBe("");
+  });
+});
+
+// ============================================================================
+// formatDateTimeISO
+// ============================================================================
+
+describe("formatDateTimeISO", () => {
+  test("formats date as YYYY-MM-DD HH:MM", () => {
+    // Use a fixed date to avoid timezone issues
+    const d = new Date(2026, 2, 22, 14, 5); // March 22, 2026 14:05 local
+    const result = formatDateTimeISO(d);
+    expect(result).toBe("2026-03-22 14:05");
+  });
+
+  test("pads single-digit months, days, hours, minutes", () => {
+    const d = new Date(2026, 0, 5, 8, 3); // Jan 5, 2026 08:03 local
+    const result = formatDateTimeISO(d);
+    expect(result).toBe("2026-01-05 08:03");
   });
 });
