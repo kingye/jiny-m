@@ -562,54 +562,7 @@ export async function buildThreadTrail(
       if (trail.length >= maxEntries) break;
 
       const dirPath = join(messagesDir, dirName);
-<<<<<<< fix/model-command-issues
-
-      let receivedEntry: TrailEntry | null = null;
-      let replyEntry: TrailEntry | null = null;
-
-      try {
-        const receivedContent = await readFile(join(dirPath, 'received.md'), 'utf-8');
-        const receivedParsed = parseStoredMessage(receivedContent);
-        if (receivedParsed && receivedParsed.bodyText.trim()) {
-          const stripped = stripQuotedHistory(receivedParsed.bodyText);
-          if (stripped.trim()) {
-            receivedEntry = {
-              sender: receivedParsed.sender,
-              timestamp: receivedParsed.timestamp,
-              topic: receivedParsed.topic,
-              bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
-              type: 'received',
-            };
-          }
-        }
-      } catch {
-        // skip missing
-      }
-
-      try {
-        const replyContent = await readFile(join(dirPath, 'reply.md'), 'utf-8');
-        const replyParsed = parseStoredReply(replyContent);
-        if (replyParsed && replyParsed.bodyText.trim()) {
-          replyEntry = {
-            sender: replyParsed.sender,
-            timestamp: replyParsed.timestamp,
-            topic: replyParsed.topic,
-            bodyText: maxPerEntry ? truncateText(replyParsed.bodyText, maxPerEntry) : replyParsed.bodyText,
-            type: 'reply',
-          };
-        }
-      } catch {
-        // skip missing
-      }
-
-      if (receivedEntry) {
-        trail.push(receivedEntry);
-      }
-      if (trail.length >= maxEntries) break;
-      if (replyEntry) {
-        trail.push(replyEntry);
-=======
-      const dirTimestamp = parseDirNameAsDate(dirName) || new Date();
+const dirTimestamp = parseDirNameAsDate(dirName) || new Date();
 
       // Read both files from this directory
       let replyEntry: TrailEntry | null = null;
@@ -622,9 +575,7 @@ export async function buildThreadTrail(
         if (parsed && parsed.bodyText.trim()) {
           replyEntry = {
             sender: parsed.sender,
-            // Use dir timestamp since reply.md has no timestamp in frontmatter
             timestamp: parsed.timestamp.getTime() === 0 ? dirTimestamp : (
-              // If parseStoredReply returned a fallback "now" timestamp, use dir timestamp instead
               Math.abs(parsed.timestamp.getTime() - Date.now()) < 60_000 ? dirTimestamp : parsed.timestamp
             ),
             topic: parsed.topic,
@@ -662,7 +613,6 @@ export async function buildThreadTrail(
       }
       if (receivedEntry && trail.length < maxEntries) {
         trail.push(receivedEntry);
->>>>>>> main
       }
     }
   } catch {
