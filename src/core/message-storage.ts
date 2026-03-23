@@ -191,8 +191,8 @@ export class MessageStorage {
     if (this.channelWorkspaceMap.has(channelName)) {
       return this.channelWorkspaceMap.get(channelName)!;
     }
-    // Default: .jiny/{channel}/workspace
-    return join(process.cwd(), `.jiny/${channelName}/workspace`);
+    // Default: {channel}/workspace (at project root)
+    return join(process.cwd(), channelName, 'workspace');
   }
 
   /** Get effective workspace for a channel (channel-specific or global). */
@@ -239,11 +239,8 @@ export class MessageStorage {
     } else {
       // Fallback: use StateManager's current channel
       const stateChannel = StateManager.getChannel();
-      if (stateChannel && this.channelWorkspaceMap.has(stateChannel)) {
+      if (stateChannel) {
         effectiveWorkspace = this.getChannelWorkspace(stateChannel);
-      } else if (stateChannel) {
-        // Default: .jiny/{channel}/workspace
-        effectiveWorkspace = join(process.cwd(), `.jiny/${stateChannel}/workspace`);
       }
     }
     const threadDir = join(effectiveWorkspace, threadName);

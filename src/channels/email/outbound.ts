@@ -16,10 +16,12 @@ import { logger } from '../../core/logger';
 
 export class EmailOutboundAdapter implements OutboundAdapter {
   readonly channelType: ChannelType = 'email';
+  readonly channelName: string;
 
   private smtpService: SmtpService;
 
-  constructor(smtpConfig: SmtpConfig) {
+  constructor(channelName: string, smtpConfig: SmtpConfig) {
+    this.channelName = channelName;
     this.smtpService = new SmtpService(smtpConfig);
   }
 

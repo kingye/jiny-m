@@ -446,7 +446,7 @@ export function validateConfig(config: any): Config {
       if (channelConfig.patterns && Array.isArray(channelConfig.patterns)) {
         validated.patterns = channelConfig.patterns.map((p: any) => {
           if (p.channel && p.rules) return validateChannelPattern(p);
-          return { ...validatePattern(p), channel: 'email' };
+          return { ...validatePattern(p), channel: channelName };
         });
       }
 

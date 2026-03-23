@@ -29,6 +29,7 @@ function makePattern(overrides: Partial<ChannelPattern> = {}): ChannelPattern {
 
 // Minimal adapter instance (doesn't start IMAP, just uses matching/naming)
 const adapter = new EmailInboundAdapter(
+  'email',
   { host: 'localhost', port: 993, username: 'test', password: 'test', tls: true },
   { checkInterval: 30000, maxRetries: 3 },
 );

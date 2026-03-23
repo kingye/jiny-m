@@ -93,8 +93,10 @@ export interface MessageAttachment {
  * thread name derivation.
  */
 export interface InboundAdapter {
-  /** Channel type this adapter handles. */
+  /** Channel type this adapter handles (e.g., 'email'). */
   readonly channelType: ChannelType;
+  /** Channel name (e.g., 'work', 'personal', '283a'). Used as unique identifier. */
+  readonly channelName: string;
 
   /**
    * Derive a thread name from a message using channel-specific logic.
@@ -133,8 +135,10 @@ export interface InboundAdapterOptions {
  * Outbound adapter — sends replies back through a channel.
  */
 export interface OutboundAdapter {
-  /** Channel type this adapter handles. */
+  /** Channel type this adapter handles (e.g., 'email'). */
   readonly channelType: ChannelType;
+  /** Channel name (e.g., 'work', 'personal', '283a'). Used as unique identifier. */
+  readonly channelName: string;
 
   /** Connect to the outbound service. */
   connect(): Promise<void>;

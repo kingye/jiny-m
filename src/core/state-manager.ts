@@ -14,8 +14,8 @@ export interface MonitorState {
 export class StateManager {
   private static readonly CURRENT_MIGRATION_VERSION = 3;
   private static readonly UID_SET_FILE = '.processed-uids.txt';
-  private static stateFilePath: string = '.jiny/email/.state.json';
-  private static stateDir: string = '.jiny/email';
+  private static stateFilePath: string = 'email/.email/.state.json';
+  private static stateDir: string = 'email/.email';
   private static migrationDisabled: boolean = false;
   private static currentChannel: string = 'email';
   private static state: MonitorState = {
@@ -32,8 +32,9 @@ export class StateManager {
   /** Set the current channel name (e.g., 'work', 'personal'). Updates paths accordingly. */
   static setChannel(channelName: string): void {
     StateManager.currentChannel = channelName;
-    StateManager.stateFilePath = `.jiny/${channelName}/.email/.state.json`;
-    StateManager.stateDir = `.jiny/${channelName}/.email`;
+    // Channel state at project root: {channel}/.email/
+    StateManager.stateFilePath = `${channelName}/.email/.state.json`;
+    StateManager.stateDir = `${channelName}/.email`;
   }
 
   /** Get the current channel name. */
@@ -450,17 +451,15 @@ export class StateManager {
       StateManager.state = JSON.parse(content);
       console.log('Loaded previous state:', StateManager.state);
     } catch (error) {
-      // Fallback: try legacy .jiny/.state.json if new path not found
-      if (StateManager.stateFilePath.includes('/email/')) {
-        try {
-          const legacyPath = StateManager.stateFilePath.replace('/email/', '/');
-          const content = await readFile(legacyPath, 'utf-8');
-          StateManager.state = JSON.parse(content);
-          console.log('Loaded previous state from legacy path:', StateManager.state);
-          return;
-        } catch {
-          // Legacy path also doesn't exist — start fresh
-        }
+      // Fallback: try legacy .jiny/email/ path for backward compatibility
+      try {
+        const legacyPath = `.jiny/${StateManager.currentChannel}/.state.json`;
+        const content = await readFile(legacyPath, 'utf-8');
+        StateManager.state = JSON.parse(content);
+        console.log('Loaded previous state from legacy path:', StateManager.state);
+        return;
+      } catch {
+        // Legacy path also doesn't exist — start fresh
       }
       console.log('No previous state found, starting fresh');
     }
@@ -586,8 +585,8 @@ export class StateManager {
   static restoreAfterTests(): void {
     StateManager.migrationDisabled = false;
     StateManager.currentChannel = 'email';
-    StateManager.stateFilePath = '.jiny/email/.state.json';
-    StateManager.stateDir = '.jiny/email';
+    StateManager.stateFilePath = 'email/.email/.state.json';
+    StateManager.stateDir = 'email/.email';
     StateManager.state = {
       lastSequenceNumber: 0,
       lastProcessedTimestamp: new Date().toISOString(),

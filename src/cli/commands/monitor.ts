@@ -82,6 +82,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       // Inbound adapter (IMAP)
       if (channelConfig.inbound) {
         const emailInbound = new EmailInboundAdapter(
+          channelName,
           channelConfig.inbound,
           watchConfig,
           {
@@ -100,7 +101,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       const needsOutbound = (replyConfig.enabled || alertingConfig?.enabled) && channelConfig.outbound;
 
       if (needsOutbound && channelConfig.outbound) {
-        const emailOutbound = new EmailOutboundAdapter(channelConfig.outbound);
+        const emailOutbound = new EmailOutboundAdapter(channelName, channelConfig.outbound);
         try {
           await emailOutbound.connect();
           registry.registerOutbound(emailOutbound);
@@ -122,6 +123,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         StateManager.setChannel('email');
 
         const emailInbound = new EmailInboundAdapter(
+          'email',
           emailConfig.inbound,
           watchConfig,
           {
@@ -135,7 +137,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         const replyConfig = configManager.getReplyConfig();
         const alertingConfig = configManager.getAlertingConfig();
         if ((replyConfig.enabled || alertingConfig?.enabled) && emailConfig.outbound) {
-          const emailOutbound = new EmailOutboundAdapter(emailConfig.outbound);
+          const emailOutbound = new EmailOutboundAdapter('email', emailConfig.outbound);
           try {
             await emailOutbound.connect();
             registry.registerOutbound(emailOutbound);
@@ -194,7 +196,10 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const alertingConfig = configManager.getAlertingConfig();
     if (alertingConfig?.enabled) {
       try {
-        const emailOutbound = registry.getOutbound('email');
+        // Get the first available outbound adapter
+        const outboundAdapters = registry.getAllOutbound();
+        if (outboundAdapters.length === 0) throw new Error('No outbound adapters');
+        const emailOutbound = outboundAdapters[0];
         const workspaceFolder = configManager.getWorkspaceConfig().folder;
         const alertService = new AlertService(emailOutbound, alertingConfig, workspaceFolder, threadManager);
         alertService.start();
@@ -218,7 +223,8 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     // 9. Send startup notification email (before starting inbound adapters which block)
     if (activeAlertService && alertingConfig?.enabled) {
       try {
-        const emailOutbound = registry.getOutbound('email');
+        const outboundAdapters = registry.getAllOutbound();
+        const emailOutbound = outboundAdapters[0];
         if (emailOutbound.sendAlert) {
           const recipient = alertingConfig.healthCheck?.recipient || alertingConfig.recipient;
           const subject = `${alertingConfig.subjectPrefix || 'Jiny-M'}: Started v${pkg.version}`;
@@ -243,6 +249,9 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 
     // 10. Start all inbound adapters (blocks — starts monitoring loop)
     for (const adapter of registry.getAllInbound()) {
+      // Set channel-specific state paths before starting each adapter
+      StateManager.setChannel(adapter.channelName);
+      
       await adapter.start({
         onMessage: async (message) => {
           // Display the message
@@ -265,7 +274,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       });
 
       activeAdapters.push(adapter);
-      logger.info('Inbound adapter started', { channel: adapter.channelType });
+      logger.info('Inbound adapter started', { channel: adapter.channelName, type: adapter.channelType });
     }
 
     // 11. Register shutdown cleanup (delete session files to prevent stale sessions on restart)

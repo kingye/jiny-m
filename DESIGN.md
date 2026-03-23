@@ -1177,23 +1177,27 @@ Jiny-M supports multiple email accounts (mailboxes) running in a single process.
 
 #### Directory Structure (Multi-Mailbox)
 
+Channels are at the **project root level** (not inside .jiny/):
+
 ```
-.jiny/
+<project-root>/
 ├── config.json                    # Master config with channels{}
-├── work/
+├── 283a/                          # Channel: 283a (at project root)
 │   ├── .email/
-│   │   ├── .state.json            # IMAP state for work mailbox
-│   │   └── .processed-uids.txt    # Processed UIDs for work
-│   └── workspace/                 # Thread directories for work emails
+│   │   ├── .state.json            # IMAP state for 283a mailbox
+│   │   └── .processed-uids.txt    # Processed UIDs
+│   └── workspace/                 # Thread directories for 283a emails
 │       └── <thread-dir>/
 │           └── messages/
-├── personal/
+├── personal/                      # Channel: personal
 │   ├── .email/
 │   │   ├── .state.json
 │   │   └── .processed-uids.txt
 │   └── workspace/
 │       └── <thread-dir>/
 │           └── messages/
+├── workspace/                     # Global workspace (backward compatibility)
+└── .jiny/                         # Internal state (backward compatibility)
 ```
 
 #### Behavior
@@ -1203,13 +1207,14 @@ Jiny-M supports multiple email accounts (mailboxes) running in a single process.
 - **Channel isolation**: Messages and threads never mix between mailboxes
 - **Concurrent processing**: All channels share the same worker pool (configured via `worker` settings)
 - **Global settings**: `worker`, `reply`, `alerting`, and `output` apply to all channels unless overridden per-channel
+- **Backward compatibility**: Legacy `.jiny/email/` and `workspace/` paths are still supported
 
 #### Migration from Single-Mailbox
 
 Existing single-mailbox configs are automatically migrated:
-- The existing `channels.email` is mapped to a channel named `"default"`
-- State files in `.jiny/email/` are moved to `.jiny/default/.email/`
-- Workspace continues to use the configured `workspace.folder`
+- The existing `channels.email` can be renamed to a channel named `"283a"` (or any custom name)
+- State files in `.jiny/email/` should be moved to `{channel-name}/.email/`
+- Workspace continues to use the configured `workspace.folder` or channel-specific workspace
 
 ### Backward Compatibility
 
