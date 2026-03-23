@@ -4,7 +4,7 @@ import { stripReplyPrefix } from '../utils/helpers';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const MAX_HISTORY_QUOTE = 3;
+const MAX_HISTORY_QUOTE = 2;
 
 /**
  * Derive a thread name from the subject by stripping Re:/Fwd: and optional additional prefixes.
