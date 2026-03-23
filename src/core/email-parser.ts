@@ -470,6 +470,8 @@ export interface TrailOptions {
   maxPerEntry?: number;
   /** Exclude this message directory (the current message being replied to). */
   excludeMessageDir?: string;
+  /** Timestamp of current message - used to find and exclude the current message directory. */
+  currentMessageTimestamp?: Date;
   /** Prepend the current message as the first entry (most recent). */
   includeCurrentMessage?: { sender: string; timestamp: Date; topic: string; bodyText: string };
 }
@@ -489,7 +491,7 @@ export async function buildThreadTrail(
   threadPath: string,
   options: TrailOptions,
 ): Promise<TrailEntry[]> {
-  const { maxEntries, maxPerEntry, excludeMessageDir, includeCurrentMessage } = options;
+  const { maxEntries, maxPerEntry, excludeMessageDir, currentMessageTimestamp, includeCurrentMessage } = options;
   const messagesDir = join(threadPath, 'messages');
   const trail: TrailEntry[] = [];
 
@@ -514,9 +516,24 @@ export async function buildThreadTrail(
       .sort()
       .reverse(); // most recent first
 
-    if (excludeMessageDir) {
-      dirNames = dirNames.filter(name => name !== excludeMessageDir);
+    // Determine which directory to exclude (the current message being replied to)
+    let excludeDir: string | undefined = excludeMessageDir;
+
+    // If no explicit excludeMessageDir but we have currentMessageTimestamp, find matching dir
+    if (!excludeDir && currentMessageTimestamp) {
+      const ts = currentMessageTimestamp;
+      const timestampStr = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}_${String(ts.getHours()).padStart(2, '0')}-${String(ts.getMinutes()).padStart(2, '0')}`;
+      // Find directory that matches the timestamp (could have seconds, so check prefix)
+      const match = dirNames.find(name => name.startsWith(timestampStr));
+      if (match) {
+        excludeDir = match;
+      }
+    }
+
+    if (excludeDir) {
+      dirNames = dirNames.filter(name => name !== excludeDir);
     } else if (includeCurrentMessage) {
+      // Fallback: skip first directory
       dirNames = dirNames.slice(1);
     }
 
@@ -592,7 +609,8 @@ export async function prepareBodyForQuoting(
 ): Promise<string> {
   const trail = await buildThreadTrail(threadPath, {
     maxEntries: maxHistory ?? MAX_HISTORY_QUOTE,
-    excludeMessageDir,
+    excludeMessageDir: excludeMessageDir || undefined,
+    currentMessageTimestamp: currentMessage.timestamp,
   });
 
   const quotedBlocks: string[] = [];
