@@ -762,7 +762,8 @@ MCP Server (stdio subprocess, cwd = thread dir):
 
 `buildThreadTrail()` reads interleaved received/reply messages from the thread's `messages/` directory. Both reply emails (quoted history) and prompt context (conversation history) use it.
 
-- **Interleaved trail**: Reads both `received.md` and `reply.md` from each message directory, ordered most-recent-first
+- **Alternating order**: Entries are ordered as received → reply → received → reply, most-recent-first
+- **Excludes current message**: The message being replied to is NOT included in quoted history (it appears in the main reply body)
 - **Stripped bodies**: Received messages are stripped of email quoted history via `stripQuotedHistory()`. Reply messages are parsed with `parseStoredReply()` to extract only the AI's response text (no quoted blocks).
 - **Limit**: `MAX_HISTORY_QUOTE = 6` entries for reply email quoted history
 - **Format**: Each entry formatted with `formatQuotedReply()` into markdown quoted blocks
@@ -770,9 +771,9 @@ MCP Server (stdio subprocess, cwd = thread dir):
 **Implementation** (`src/core/email-parser.ts`):
 - `parseStoredMessage()` extracts sender, timestamp, topic, bodyText from stored `received.md` frontmatter
 - `parseStoredReply()` extracts the AI's response text from `reply.md`, stopping before the trailing `---` separator or quoted history blocks
-- `buildThreadTrail(threadPath, options)` orchestrates reading message dirs, parsing both file types, stripping bodies, and returning an interleaved `TrailEntry[]`
-- `prepareBodyForQuoting(threadPath, currentMessage, maxHistory?, excludeMessageDir?)` wraps `buildThreadTrail()` for reply email usage, formatting each entry with `formatQuotedReply()`
-- `formatQuotedReply(sender, timestamp, subject, bodyText)` formats a single entry as a quoted markdown block
+- `buildThreadTrail(threadPath, options)` reads all historical messages, collects received and reply separately, then interleaves them in alternating order
+- `prepareBodyForQuoting(threadPath, currentMessage, maxHistory?, excludeMessageDir?)` wraps `buildThreadTrail()` for reply email usage, excluding current message via `excludeMessageDir`, formatting each entry with `formatQuotedReply()`
+- `formatQuotedReply(sender, timestamp, subject, bodyText)` formats a single entry as a quoted block
 
 **Prompt context** (`src/services/opencode/prompt-builder.ts`):
 - `buildPromptContext()` uses `buildThreadTrail()` with `maxPerEntry: 800` chars and `MAX_TOTAL_CONTEXT: 2000` chars
