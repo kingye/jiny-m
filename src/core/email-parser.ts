@@ -4,7 +4,7 @@ import { stripReplyPrefix } from '../utils/helpers';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const MAX_HISTORY_QUOTE = 2;
+const MAX_HISTORY_QUOTE = 6;
 
 /**
  * Derive a thread name from the subject by stripping Re:/Fwd: and optional additional prefixes.
@@ -374,22 +374,136 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
 }
 
 /**
- * Prepare quoted history for a reply, combining the current message with recent historical messages.
- * Reads stored messages from the thread's messages/ directory, sorts by timestamp (descending),
- * includes up to maxHistory messages (default MAX_HISTORY_QUOTE).
- * Each message is formatted as a quoted block using formatQuotedReply.
- * The current message (the one being replied to) is included as the first (most recent) quoted block.
- * Returns the combined quoted history string, empty if no messages.
+ * Parse a stored reply markdown file (reply.md) into its components.
+ * Extracts only the AI's response text, stopping before the quoted history
+ * (the trailing `--- ` separator or `### SenderName (time)` blocks).
+ * Returns null if the format is invalid.
  */
-export async function prepareBodyForQuoting(
+export function parseStoredReply(mdContent: string): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
+  const lines = mdContent.split('\n');
+  let inFrontmatter = false;
+  let pastFrontmatter = false;
+  let foundHeader = false;
+  const frontmatter: Record<string, string> = {};
+  const bodyLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const trimmed = line.trimEnd();
+
+    // Parse frontmatter
+    if (!pastFrontmatter) {
+      if (trimmed === '---') {
+        if (inFrontmatter) {
+          pastFrontmatter = true;
+          inFrontmatter = false;
+        } else {
+          inFrontmatter = true;
+        }
+        continue;
+      }
+      if (inFrontmatter) {
+        const match = /^(\w+):\s*(.+)$/.exec(trimmed);
+        if (match) {
+          frontmatter[match[1]!] = match[2]!;
+        }
+      }
+      continue;
+    }
+
+    // After frontmatter, look for header line (## AI Assistant or similar)
+    if (!foundHeader) {
+      if (trimmed.startsWith('## ')) {
+        foundHeader = true;
+      }
+      continue;
+    }
+
+    // Stop at the trailing separator or quoted history blocks
+    // reply.md ends with `--- ` (trailing space) before quoted history
+    if (/^[-]{3,}\s*$/.test(trimmed)) {
+      break;
+    }
+    // Also stop at quoted history header (### SenderName (HH:MM))
+    if (/^###\s+.+\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+      break;
+    }
+
+    bodyLines.push(line);
+  }
+
+  if (!foundHeader) {
+    return null;
+  }
+
+  const bodyText = bodyLines.join('\n').trim();
+  // reply.md doesn't store timestamp in frontmatter, use current time as fallback
+  let timestamp = new Date();
+  if (frontmatter.timestamp) {
+    try {
+      const d = new Date(frontmatter.timestamp);
+      if (!isNaN(d.getTime())) timestamp = d;
+    } catch { /* use default */ }
+  }
+
+  return { sender: 'AI Assistant', timestamp, topic: '', bodyText };
+}
+
+/**
+ * A single entry in the thread trail (either a received message or a sent reply).
+ */
+export interface TrailEntry {
+  sender: string;
+  timestamp: Date;
+  topic: string;
+  bodyText: string;
+  type: 'received' | 'reply';
+}
+
+/**
+ * Options for buildThreadTrail().
+ */
+export interface TrailOptions {
+  /** Maximum number of trail entries to return. */
+  maxEntries: number;
+  /** If set, truncate each entry's bodyText to this length. */
+  maxPerEntry?: number;
+  /** Exclude this message directory (the current message being replied to). */
+  excludeMessageDir?: string;
+  /** Prepend the current message as the first entry (most recent). */
+  includeCurrentMessage?: { sender: string; timestamp: Date; topic: string; bodyText: string };
+}
+
+/**
+ * Build an interleaved thread trail from stored received.md and reply.md files.
+ * Reads message directories sorted by date (most recent first), parses both
+ * received.md and reply.md from each, strips quoted history from both,
+ * and returns an interleaved array of trail entries.
+ *
+ * For received.md: strips email quoted history (forwarded/reply chains).
+ * For reply.md: extracts only the AI's response text (no quoted blocks).
+ *
+ * Used by both reply email (quoted history) and prompt context (conversation history).
+ */
+export async function buildThreadTrail(
   threadPath: string,
-  currentMessage: { sender: string; timestamp: Date; topic: string; bodyText: string },
-  maxHistory?: number,
-  excludeMessageDir?: string,
-): Promise<string> {
-  const limit = maxHistory ?? MAX_HISTORY_QUOTE;
+  options: TrailOptions,
+): Promise<TrailEntry[]> {
+  const { maxEntries, maxPerEntry, excludeMessageDir, includeCurrentMessage } = options;
   const messagesDir = join(threadPath, 'messages');
-  let storedMessages: Array<{ sender: string; timestamp: Date; topic: string; bodyText: string }> = [];
+  const trail: TrailEntry[] = [];
+
+  // Prepend current message (stripped) if provided
+  if (includeCurrentMessage) {
+    const stripped = stripQuotedHistory(includeCurrentMessage.bodyText);
+    trail.push({
+      sender: includeCurrentMessage.sender,
+      timestamp: includeCurrentMessage.timestamp,
+      topic: includeCurrentMessage.topic,
+      bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
+      type: 'received',
+    });
+  }
 
   try {
     const entries = await readdir(messagesDir, { withFileTypes: true });
@@ -402,35 +516,85 @@ export async function prepareBodyForQuoting(
 
     if (excludeMessageDir) {
       dirNames = dirNames.filter(name => name !== excludeMessageDir);
-    } else {
+    } else if (includeCurrentMessage) {
       // Assume the most recent directory is the current message, skip it
       dirNames = dirNames.slice(1);
     }
-    // Take up to limit - 1 historical messages (excluding current)
-    dirNames = dirNames.slice(0, limit - 1);
 
     for (const dirName of dirNames) {
-      const receivedPath = join(messagesDir, dirName, 'received.md');
-      try {
-        const content = await readFile(receivedPath, 'utf-8');
-        const parsed = parseStoredMessage(content);
-        if (parsed) {
-          storedMessages.push(parsed);
+      if (trail.length >= maxEntries) break;
+
+      const dirPath = join(messagesDir, dirName);
+
+      // Read received.md — strip email quoted history
+      if (trail.length < maxEntries) {
+        try {
+          const content = await readFile(join(dirPath, 'received.md'), 'utf-8');
+          const parsed = parseStoredMessage(content);
+          if (parsed && parsed.bodyText.trim()) {
+            const stripped = stripQuotedHistory(parsed.bodyText);
+            if (stripped.trim()) {
+              trail.push({
+                sender: parsed.sender,
+                timestamp: parsed.timestamp,
+                topic: parsed.topic,
+                bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
+                type: 'received',
+              });
+            }
+          }
+        } catch {
+          // skip missing or unreadable received.md
         }
-      } catch {
-        // skip missing or unreadable files
+      }
+
+      // Read reply.md — extract AI text only (no quoted blocks)
+      if (trail.length < maxEntries) {
+        try {
+          const content = await readFile(join(dirPath, 'reply.md'), 'utf-8');
+          const parsed = parseStoredReply(content);
+          if (parsed && parsed.bodyText.trim()) {
+            trail.push({
+              sender: parsed.sender,
+              timestamp: parsed.timestamp,
+              topic: parsed.topic,
+              bodyText: maxPerEntry ? truncateText(parsed.bodyText, maxPerEntry) : parsed.bodyText,
+              type: 'reply',
+            });
+          }
+        } catch {
+          // skip missing or unreadable reply.md
+        }
       }
     }
   } catch {
-    // If messages/ directory doesn't exist, fallback to legacy .jiny/ or empty
+    // If messages/ directory doesn't exist, return whatever we have (possibly just current message)
   }
 
-  // Start with current message (most recent)
-  const allMessages = [currentMessage, ...storedMessages].slice(0, limit);
-  const quotedBlocks: string[] = [];
+  return trail.slice(0, maxEntries);
+}
 
-  for (const msg of allMessages) {
-    const quoted = formatQuotedReply(msg.sender, msg.timestamp, msg.topic, msg.bodyText);
+/**
+ * Prepare quoted history for a reply, combining the current message with recent historical messages.
+ * Uses buildThreadTrail() to read interleaved received/reply messages with stripped bodies.
+ * Each entry is formatted as a quoted block using formatQuotedReply.
+ * Returns the combined quoted history string, empty if no messages.
+ */
+export async function prepareBodyForQuoting(
+  threadPath: string,
+  currentMessage: { sender: string; timestamp: Date; topic: string; bodyText: string },
+  maxHistory?: number,
+  excludeMessageDir?: string,
+): Promise<string> {
+  const trail = await buildThreadTrail(threadPath, {
+    maxEntries: maxHistory ?? MAX_HISTORY_QUOTE,
+    includeCurrentMessage: currentMessage,
+    excludeMessageDir,
+  });
+
+  const quotedBlocks: string[] = [];
+  for (const entry of trail) {
+    const quoted = formatQuotedReply(entry.sender, entry.timestamp, entry.topic, entry.bodyText);
     if (quoted) {
       quotedBlocks.push(quoted);
     }
@@ -441,8 +605,7 @@ export async function prepareBodyForQuoting(
 
 /**
  * Format a quoted reply block in markdown.
- * Takes the FULL body as-is — NO stripping, NO cleaning.
- * Cleaning happens at ingest time in InboundAdapter, not here.
+ * Takes the body text (already stripped of nested quoted history by the caller).
  *
  * Returns empty string if bodyText is empty (no quoted block needed).
  */
