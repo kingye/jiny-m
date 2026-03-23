@@ -517,54 +517,62 @@ export async function buildThreadTrail(
     if (excludeMessageDir) {
       dirNames = dirNames.filter(name => name !== excludeMessageDir);
     } else if (includeCurrentMessage) {
-      // Assume the most recent directory is the current message, skip it
       dirNames = dirNames.slice(1);
     }
 
-    for (const dirName of dirNames) {
-      if (trail.length >= maxEntries) break;
+    const allReceived: TrailEntry[] = [];
+    const allReplies: TrailEntry[] = [];
 
+    for (const dirName of dirNames) {
       const dirPath = join(messagesDir, dirName);
 
-      // Read received.md — strip email quoted history
-      if (trail.length < maxEntries) {
-        try {
-          const content = await readFile(join(dirPath, 'received.md'), 'utf-8');
-          const parsed = parseStoredMessage(content);
-          if (parsed && parsed.bodyText.trim()) {
-            const stripped = stripQuotedHistory(parsed.bodyText);
-            if (stripped.trim()) {
-              trail.push({
-                sender: parsed.sender,
-                timestamp: parsed.timestamp,
-                topic: parsed.topic,
-                bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
-                type: 'received',
-              });
-            }
-          }
-        } catch {
-          // skip missing or unreadable received.md
-        }
-      }
-
-      // Read reply.md — extract AI text only (no quoted blocks)
-      if (trail.length < maxEntries) {
-        try {
-          const content = await readFile(join(dirPath, 'reply.md'), 'utf-8');
-          const parsed = parseStoredReply(content);
-          if (parsed && parsed.bodyText.trim()) {
-            trail.push({
-              sender: parsed.sender,
-              timestamp: parsed.timestamp,
-              topic: parsed.topic,
-              bodyText: maxPerEntry ? truncateText(parsed.bodyText, maxPerEntry) : parsed.bodyText,
-              type: 'reply',
+      try {
+        const receivedContent = await readFile(join(dirPath, 'received.md'), 'utf-8');
+        const receivedParsed = parseStoredMessage(receivedContent);
+        if (receivedParsed && receivedParsed.bodyText.trim()) {
+          const stripped = stripQuotedHistory(receivedParsed.bodyText);
+          if (stripped.trim()) {
+            allReceived.push({
+              sender: receivedParsed.sender,
+              timestamp: receivedParsed.timestamp,
+              topic: receivedParsed.topic,
+              bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
+              type: 'received',
             });
           }
-        } catch {
-          // skip missing or unreadable reply.md
         }
+      } catch {
+        // skip missing
+      }
+
+      try {
+        const replyContent = await readFile(join(dirPath, 'reply.md'), 'utf-8');
+        const replyParsed = parseStoredReply(replyContent);
+        if (replyParsed && replyParsed.bodyText.trim()) {
+          allReplies.push({
+            sender: replyParsed.sender,
+            timestamp: replyParsed.timestamp,
+            topic: replyParsed.topic,
+            bodyText: maxPerEntry ? truncateText(replyParsed.bodyText, maxPerEntry) : replyParsed.bodyText,
+            type: 'reply',
+          });
+        }
+      } catch {
+        // skip missing
+      }
+    }
+
+    let receivedIdx = 0;
+    let replyIdx = 0;
+    while (trail.length < maxEntries && (receivedIdx < allReceived.length || replyIdx < allReplies.length)) {
+      if (receivedIdx < allReceived.length) {
+        trail.push(allReceived[receivedIdx]!);
+        receivedIdx++;
+      }
+      if (trail.length >= maxEntries) break;
+      if (replyIdx < allReplies.length) {
+        trail.push(allReplies[replyIdx]!);
+        replyIdx++;
       }
     }
   } catch {
@@ -588,7 +596,6 @@ export async function prepareBodyForQuoting(
 ): Promise<string> {
   const trail = await buildThreadTrail(threadPath, {
     maxEntries: maxHistory ?? MAX_HISTORY_QUOTE,
-    includeCurrentMessage: currentMessage,
     excludeMessageDir,
   });
 

@@ -314,14 +314,14 @@ describe("buildThreadTrail", () => {
 
     const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
 
-    // Most recent first: newer received, then older received + reply
+    // Interleaved order: received, reply, received
     expect(trail.length).toBe(3);
     expect(trail[0]!.bodyText).toContain("Follow-up question");
     expect(trail[0]!.type).toBe("received");
-    expect(trail[1]!.bodyText).toContain("Hello from Alice");
-    expect(trail[1]!.type).toBe("received");
-    expect(trail[2]!.bodyText).toContain("Hello Alice, I can help");
-    expect(trail[2]!.type).toBe("reply");
+    expect(trail[1]!.bodyText).toContain("Hello Alice, I can help");
+    expect(trail[1]!.type).toBe("reply");
+    expect(trail[2]!.bodyText).toContain("Hello from Alice");
+    expect(trail[2]!.type).toBe("received");
   });
 
   test("respects maxEntries limit", async () => {
@@ -452,12 +452,21 @@ describe("prepareBodyForQuoting", () => {
     const result = await prepareBodyForQuoting(
       tempDir,
       { sender: "Alice", timestamp: new Date(), topic: "Hello", bodyText: "New message from Alice." },
+      10,
+      "2026-03-22_12-00-00",
     );
 
-    // Should contain current message and historical entries
-    expect(result).toContain("New message from Alice");
+    // Should NOT contain current message (it goes in main reply body, not quoted history)
+    expect(result).not.toContain("New message from Alice");
+    // Should contain historical entries:
+    // - 11-00-00 received (middle)
+    // - 10-00-00 received (oldest)
+    // - 10-00-00 reply (oldest reply)
+    expect(result).toContain("Middle message");
     expect(result).toContain("Older message from Alice");
     expect(result).toContain("AI replied to Alice");
+    // 12-00-00 is excluded as current, so shouldn't appear
+    expect(result).not.toContain("Latest message");
   });
 
   test("returns empty string when no messages", async () => {
