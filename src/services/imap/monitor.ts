@@ -26,6 +26,12 @@ export class EmailMonitor {
   private reconnectAttempts: number = 0;
   private lastSuccessfulPoll: number = 0;
   private channelName: string;
+  private log: {
+    info: (msg: string, data?: Record<string, any>) => void;
+    warn: (msg: string, data?: Record<string, any>) => void;
+    error: (msg: string, data?: Record<string, any>) => void;
+    debug: (msg: string, data?: Record<string, any>) => void;
+  };
 
   constructor(
     channelName: string,
@@ -44,6 +50,13 @@ export class EmailMonitor {
     this.folder = folder;
     this.verbose = verbose;
     this.debug = debug;
+    // Create channel-scoped logger that auto-includes channel name
+    this.log = {
+      info: (msg: string, data?: Record<string, any>) => logger.info(msg, { ch: channelName, ...data }),
+      warn: (msg: string, data?: Record<string, any>) => logger.warn(msg, { ch: channelName, ...data }),
+      error: (msg: string, data?: Record<string, any>) => logger.error(msg, { ch: channelName, ...data }),
+      debug: (msg: string, data?: Record<string, any>) => logger.debug(msg, { ch: channelName, ...data }),
+    };
   }
 
   /** Ensure StateManager is set to this monitor's channel before any state operation. */
@@ -59,14 +72,14 @@ export class EmailMonitor {
       await StateManager.ensureInitialized();
       await StateManager.load();
       const lastSeq = StateManager.getLastSequenceNumber();
-      logger.info('Resuming sequence-based monitoring', { lastSequenceNumber: lastSeq });
+      this.log.info('Resuming sequence-based monitoring', { lastSequenceNumber: lastSeq });
 
       await this.imapClient.connect();
 
       const currentInfo = await this.imapClient.getNewestUid(this.folder);
       this.lastUid = currentInfo || lastSeq;
 
-      logger.info('Monitoring started', { folder: this.folder, lastUid: this.lastUid });
+      this.log.info('Monitoring started', { folder: this.folder, lastUid: this.lastUid });
 
       if (options.once) {
         await this.checkForNewEmails(options);
@@ -80,7 +93,7 @@ export class EmailMonitor {
           await this.checkForNewEmails(options);
 
           if (this.reconnectAttempts > 0) {
-            logger.info('Connection restored', { reconnectAttempts: this.reconnectAttempts });
+            this.log.info('Connection restored', { reconnectAttempts: this.reconnectAttempts });
             this.reconnectAttempts = 0;
           }
 
@@ -95,12 +108,12 @@ export class EmailMonitor {
           if (!this.running) break;
 
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error('Monitor error, will retry...', { error: errorMessage });
+          this.log.error('Monitor error, will retry...', { error: errorMessage });
 
           this.reconnectAttempts++;
 
           if (this.reconnectAttempts >= reconnectConfig.maxAttempts) {
-            logger.error('Max reconnection attempts reached, stopping monitor', { reconnectAttempts: this.reconnectAttempts });
+            this.log.error('Max reconnection attempts reached, stopping monitor', { reconnectAttempts: this.reconnectAttempts });
             if (options.onError) {
               options.onError(new Error(`Max reconnection attempts (${reconnectConfig.maxAttempts}) reached: ${errorMessage}`));
             }
@@ -112,13 +125,13 @@ export class EmailMonitor {
             reconnectConfig.maxDelay
           );
 
-          logger.warn(`Waiting ${delay}ms before reconnection attempt ${this.reconnectAttempts}/${reconnectConfig.maxAttempts}...`);
+          this.log.warn(`Waiting ${delay}ms before reconnection attempt ${this.reconnectAttempts}/${reconnectConfig.maxAttempts}...`);
           await sleep(delay);
         }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Monitor error', { error: errorMessage });
+      this.log.error('Monitor error', { error: errorMessage });
       if (options.onError) {
         options.onError(new Error(errorMessage));
       }
@@ -137,7 +150,7 @@ export class EmailMonitor {
   private async checkForNewEmails(options: MonitorOptions): Promise<void> {
     this.setChannelContext();
     if (!this.imapClient.isConnected()) {
-      logger.warn('Not connected to IMAP server, attempting to reconnect...');
+      this.log.warn('Not connected to IMAP server, attempting to reconnect...');
       await this.imapClient.reconnect();
     }
 
@@ -147,7 +160,7 @@ export class EmailMonitor {
     const disableCheck = this.watchConfig.disableConsistencyCheck || false;
 
     if (currentCount < lastSeq) {
-      logger.warn('Deletion detected, triggering recovery', {
+      this.log.warn('Deletion detected, triggering recovery', {
         lastSequenceNumber: lastSeq,
         currentCount,
       });
@@ -156,7 +169,7 @@ export class EmailMonitor {
     }
 
     if (!disableCheck && currentCount > lastSeq + maxThreshold) {
-      logger.warn('Suspicious jump in email count, triggering recovery', {
+      this.log.warn('Suspicious jump in email count, triggering recovery', {
         lastSequenceNumber: lastSeq,
         currentCount,
         threshold: maxThreshold,
@@ -174,7 +187,7 @@ export class EmailMonitor {
     options: MonitorOptions
   ) {
     if (currentCount <= lastSeq) {
-      logger.debug('No new messages', { lastSeq, currentCount });
+      this.log.debug('No new messages', { lastSeq, currentCount });
       return;
     }
 
@@ -217,9 +230,9 @@ export class EmailMonitor {
 
     try {
       processedUids = await StateManager.loadProcessedUids();
-      logger.info('Loaded processed UID set', { count: processedUids.size });
+      this.log.info('Loaded processed UID set', { count: processedUids.size });
     } catch (error) {
-      logger.error('Failed to load UID set for recovery', {
+      this.log.error('Failed to load UID set for recovery', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       throw new Error('Recovery failed: Unable to load UID set. Please check .jiny/.processed-uids.json');
@@ -230,7 +243,7 @@ export class EmailMonitor {
     const stateUidValidity = Number(StateManager.getState().uidValidity);
 
     if (serverUidValidity !== stateUidValidity) {
-      logger.warn('UIDVALIDITY changed, resetting UID set', {
+      this.log.warn('UIDVALIDITY changed, resetting UID set', {
         serverUidValidity,
         stateUidValidity,
       });
@@ -264,7 +277,7 @@ export class EmailMonitor {
       const fromAddress = (imapEmail.envelope.from[0]?.address) ?? '';
       const subject = imapEmail.envelope.subject ?? '';
 
-      logger.debug('Processing email', { from: fromAddress, subject, uid: imapEmail.uid });
+      this.log.debug('Processing email', { from: fromAddress, subject, uid: imapEmail.uid });
 
       await StateManager.trackUid(imapEmail.uid);
 
@@ -280,14 +293,14 @@ export class EmailMonitor {
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        logger.error('Error parsing email body', { uid: imapEmail.uid, error: errorMessage });
+        this.log.error('Error parsing email body', { uid: imapEmail.uid, error: errorMessage });
         if (options.onError) {
           options.onError(new Error(errorMessage));
         }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Error processing message', { uid: imapEmail.uid, error: errorMessage });
+      this.log.error('Error processing message', { uid: imapEmail.uid, error: errorMessage });
       if (options.onError) {
         options.onError(new Error(errorMessage));
       }
@@ -330,32 +343,32 @@ export class EmailMonitor {
       const mailbox = await client.mailboxOpen(this.folder);
 
       if (client.idle) {
-        logger.debug('Starting IDLE mode');
+        this.log.debug('Starting IDLE mode');
         await client.idle();
       }
     } catch (error) {
-      logger.error('IDLE wait failed', { error: error instanceof Error ? error.message : 'Unknown error' });
+      this.log.error('IDLE wait failed', { error: error instanceof Error ? error.message : 'Unknown error' });
       throw error;
     }
   }
 
   async checkNow(): Promise<void> {
     if (!this.running) {
-      logger.warn('Cannot check emails: monitor is not running');
+      this.log.warn('Cannot check emails: monitor is not running');
       return;
     }
 
     try {
-      logger.debug('Triggering immediate email check...');
+      this.log.debug('Triggering immediate email check...');
       await this.checkForNewEmails({
         once: false,
         useIdle: false,
         verbose: this.verbose,
         onError: undefined,
       });
-      logger.debug('Immediate check complete');
+      this.log.debug('Immediate check complete');
     } catch (error) {
-      logger.error('Failed to check emails immediately', { error: error instanceof Error ? error.message : 'Unknown error' });
+      this.log.error('Failed to check emails immediately', { error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 }
