@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Docker volumes simplified**: Reduced from 4 volume mounts to 2 — single host directory (`JINY_DIR`) maps to `/opt/jiny-m/` containing `.jiny/`, `.env`, and `workspace/`; OpenCode config remains a separate read-only mount
-- **Quoted history reduced**: `MAX_HISTORY_QUOTE` reduced from 5 to 3 (current message + up to 2 previous)
+- **Quoted history reduced**: `MAX_HISTORY_QUOTE` reduced from 5 to 2 (current message + up to 1 previous)
 
 ## [0.2.2] - 2026-03-22
 
