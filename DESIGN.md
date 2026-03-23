@@ -963,32 +963,37 @@ Each directory contains:
 ```json
 {
   "channels": {
-    "email": {
+    "283a": {
+      "type": "email",
       "inbound": {
-        "host": "imap.163.com",
+        "host": "${IMAP_HOST}",
         "port": 993,
         "tls": true,
-        "username": "jiny283@163.com",
+        "authTimeout": 30000,
+        "username": "${IMAP_USER}",
         "password": "${IMAP_PASSWORD}"
       },
       "outbound": {
-        "host": "smtp.163.com",
+        "host": "${SMTP_HOST}",
         "port": 465,
         "secure": true,
-        "username": "jiny283@163.com",
+        "username": "${SMTP_USER}",
         "password": "${SMTP_PASSWORD}"
       },
       "watch": {
-        "pollInterval": 30000,
-        "folder": "INBOX",
-        "useIdle": true
-      }
+        "checkInterval": 30,
+        "maxRetries": 5,
+        "useIdle": false,
+        "folder": "INBOX"
+      },
+      "workspace": "./workspace"
     }
   },
   "patterns": [
     {
       "name": "sap",
-      "channel": "email",
+      "channel": "283a",
+      "enabled": true,
       "rules": {
         "sender": { "exact": ["kingye@petalmail.com"] },
         "subject": { "prefix": ["jiny"] }
@@ -997,13 +1002,10 @@ Each directory contains:
         "enabled": true,
         "allowedExtensions": [".pdf", ".pptx", ".docx", ".xlsx", ".png", ".jpg", ".txt", ".md"],
         "maxFileSize": "25mb",
-        "maxAttachmentsPerEmail": 10
+        "maxAttachmentsPerMessage": 10
       }
     }
   ],
-  "workspace": {
-    "folder": "./workspace"
-  },
   "worker": {
     "maxConcurrentThreads": 3,
     "maxQueueSizePerThread": 10
@@ -1025,6 +1027,11 @@ Each directory contains:
   },
   "output": {
     "format": "text"
+  },
+  "alerting": {
+    "enabled": true,
+    "recipient": "kingye@petalmail.com",
+    "batchIntervalMinutes": 5
   }
 }
 ```
@@ -1096,14 +1103,14 @@ interface AttachmentConfig {
 ```
 .jiny/
 ├── config.json                       # Main config
-└── <channel-name>/                   # Per-channel directory (e.g., "work", "personal")
-    ├── .email/                       # Email channel state
-    │   ├── .state.json               # { lastSequenceNumber, lastProcessedTimestamp, migrationVersion }
-    │   └── .processed-uids.txt       # One UID per line, append-only
-    └── workspace/                    # Channel-specific workspace (thread directories)
+└── <channel-name>/                   # Per-channel directory (e.g., "283a", "work")
+    ├── .state.json                   # { lastSequenceNumber, lastProcessedTimestamp, migrationVersion }
+    └── .processed-uids.txt           # One UID per line, append-only
 ```
 
 Each channel manages its own state independently. For email, state tracks IMAP sequence numbers and processed UIDs. For FeiShu (future), state would track webhook cursors or message timestamps.
+
+**Note:** The per-channel workspace (thread directories) is stored at the path specified by `channel.workspace` in config (e.g., `./workspace` relative to project root), not inside `.jiny/`. This keeps user content separate from internal state.
 
 ### Multi-Mailbox Support
 
@@ -1167,37 +1174,43 @@ Jiny-M supports multiple email accounts (mailboxes) running in a single process.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `type` | Yes | Channel type (currently only `"email"`) |
-| `inbound` | Yes | IMAP configuration for receiving emails |
-| `outbound` | Yes | SMTP configuration for sending replies |
-| `watch` | No | Email polling settings (pollInterval, folder, useIdle) |
+| `type` | Yes | Channel type (currently `"email"`) |
+| `inbound` | No | IMAP configuration for receiving emails |
+| `outbound` | No | SMTP configuration for sending replies |
+| `watch` | No | Email polling settings (checkInterval, folder, useIdle, maxRetries) |
 | `patterns` | No | Array of pattern definitions for this channel |
-| `workspace` | No | Workspace directory path (default: `{channel-name}/workspace/`) |
+| `workspace` | No | Workspace directory path (e.g., `./workspace`) |
 | `reply` | No | Channel-specific reply settings (overrides global) |
+
+**Watch config fields:**
+| Field | Default | Description |
+|-------|---------|-------------|
+| `checkInterval` | 30 | Polling interval in seconds |
+| `maxRetries` | 5 | Max consecutive failures before giving up |
+| `useIdle` | false | Use IMAP IDLE instead of polling |
+| `folder` | "INBOX" | Mailbox folder to monitor |
 
 #### Directory Structure (Multi-Mailbox)
 
-Channels are at the **project root level** (not inside .jiny/):
-
+**Per-channel state** in `.jiny/<channel-name>/`:
 ```
 <project-root>/
 ├── config.json                    # Master config with channels{}
-├── 283a/                          # Channel: 283a (at project root)
-│   ├── .email/
-│   │   ├── .state.json            # IMAP state for 283a mailbox
-│   │   └── .processed-uids.txt    # Processed UIDs
-│   └── workspace/                 # Thread directories for 283a emails
-│       └── <thread-dir>/
-│           └── messages/
-├── personal/                      # Channel: personal
-│   ├── .email/
-│   │   ├── .state.json
-│   │   └── .processed-uids.txt
-│   └── workspace/
-│       └── <thread-dir>/
-│           └── messages/
-├── workspace/                     # Global workspace (backward compatibility)
-└── .jiny/                         # Internal state (backward compatibility)
+├── .jiny/
+│   ├── config.json                # Main config (copy or reference)
+│   └── 283a/                      # Channel: 283a
+│       ├── .state.json            # IMAP state for 283a mailbox
+│       └── .processed-uids.txt    # Processed UIDs
+└── workspace/                     # Channel workspace (from config: channels.283a.workspace)
+    └── <thread-dir>/
+        ├── messages/              # Per-message directories
+        ├── .jiny/                 # Thread internal state
+        │   ├── session.json
+        │   ├── model-override
+        │   ├── mode-override
+        │   └── reply-sent.flag
+        ├── opencode.json
+        └── system.md              # Optional thread-specific prompt
 ```
 
 #### Behavior
