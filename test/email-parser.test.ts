@@ -314,14 +314,17 @@ describe("buildThreadTrail", () => {
 
     const trail = await buildThreadTrail(tempDir, { maxEntries: 10 });
 
-    // Interleaved order: received, reply, received
+    // Each directory: received → reply (if exists)
+    // 11:00 dir: received only
+    // 10:00 dir: received + reply
+    // Order: received(11:00), received(10:00), reply(10:00)
     expect(trail.length).toBe(3);
     expect(trail[0]!.bodyText).toContain("Follow-up question");
     expect(trail[0]!.type).toBe("received");
-    expect(trail[1]!.bodyText).toContain("Hello Alice, I can help");
-    expect(trail[1]!.type).toBe("reply");
-    expect(trail[2]!.bodyText).toContain("Hello from Alice");
-    expect(trail[2]!.type).toBe("received");
+    expect(trail[1]!.bodyText).toContain("Hello from Alice");
+    expect(trail[1]!.type).toBe("received");
+    expect(trail[2]!.bodyText).toContain("Hello Alice, I can help");
+    expect(trail[2]!.type).toBe("reply");
   });
 
   test("respects maxEntries limit", async () => {

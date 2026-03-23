@@ -520,11 +520,13 @@ export async function buildThreadTrail(
       dirNames = dirNames.slice(1);
     }
 
-    const allReceived: TrailEntry[] = [];
-    const allReplies: TrailEntry[] = [];
-
     for (const dirName of dirNames) {
+      if (trail.length >= maxEntries) break;
+
       const dirPath = join(messagesDir, dirName);
+
+      let receivedEntry: TrailEntry | null = null;
+      let replyEntry: TrailEntry | null = null;
 
       try {
         const receivedContent = await readFile(join(dirPath, 'received.md'), 'utf-8');
@@ -532,13 +534,13 @@ export async function buildThreadTrail(
         if (receivedParsed && receivedParsed.bodyText.trim()) {
           const stripped = stripQuotedHistory(receivedParsed.bodyText);
           if (stripped.trim()) {
-            allReceived.push({
+            receivedEntry = {
               sender: receivedParsed.sender,
               timestamp: receivedParsed.timestamp,
               topic: receivedParsed.topic,
               bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
               type: 'received',
-            });
+            };
           }
         }
       } catch {
@@ -549,30 +551,24 @@ export async function buildThreadTrail(
         const replyContent = await readFile(join(dirPath, 'reply.md'), 'utf-8');
         const replyParsed = parseStoredReply(replyContent);
         if (replyParsed && replyParsed.bodyText.trim()) {
-          allReplies.push({
+          replyEntry = {
             sender: replyParsed.sender,
             timestamp: replyParsed.timestamp,
             topic: replyParsed.topic,
             bodyText: maxPerEntry ? truncateText(replyParsed.bodyText, maxPerEntry) : replyParsed.bodyText,
             type: 'reply',
-          });
+          };
         }
       } catch {
         // skip missing
       }
-    }
 
-    let receivedIdx = 0;
-    let replyIdx = 0;
-    while (trail.length < maxEntries && (receivedIdx < allReceived.length || replyIdx < allReplies.length)) {
-      if (receivedIdx < allReceived.length) {
-        trail.push(allReceived[receivedIdx]!);
-        receivedIdx++;
+      if (receivedEntry) {
+        trail.push(receivedEntry);
       }
       if (trail.length >= maxEntries) break;
-      if (replyIdx < allReplies.length) {
-        trail.push(allReplies[replyIdx]!);
-        replyIdx++;
+      if (replyEntry) {
+        trail.push(replyEntry);
       }
     }
   } catch {
