@@ -224,6 +224,10 @@ export class ThreadManager {
             logger.info('Command result', { command: cmd.handler.name, message: result.message });
             commandResults.push(`${cmd.handler.name}: ${result.message}`);
           }
+          if (!result.success && result.error) {
+            logger.warn('Command failed', { command: cmd.handler.name, error: result.error });
+            commandResults.push(`${cmd.handler.name}: ${result.error}`);
+          }
         }
         // Strip executed command lines from the message body so the AI doesn't see them
         const commandNames = new Set(commands.map(c => c.handler.name));
@@ -239,11 +243,18 @@ export class ThreadManager {
             .join('\n');
         }
 
-        // If body is empty after stripping commands, inject a note so the AI
-        // knows only commands were executed and should confirm + stop.
+        // If body is empty after stripping commands, send command results directly
+        // and skip AI processing.
         if (commandResults.length > 0 && (!message.content.text || !message.content.text.trim())) {
+          // Reply disabled → store only, no outbound reply
+          if (!this.replyConfig.enabled) {
+            logger.info('Reply disabled, command results stored only', { thread: threadName });
+            return;
+          }
+
           const summary = commandResults.join('\n');
-          message.content.text = `[System: The following commands were executed. Confirm the results to the user and stop.]\n${summary}`;
+          await this.sendDirectReply(message, summary, threadPath, messageDir);
+          return;
         }
       }
 

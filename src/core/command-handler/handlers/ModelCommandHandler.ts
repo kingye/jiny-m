@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { readFile, unlink, mkdir } from 'node:fs/promises';
 import type { CommandHandler, CommandContext, CommandResult } from '../CommandHandler';
 import { logger } from '../../logger';
+import { stripJsonComments } from '../../../utils/jsonc';
 
 const MODEL_OVERRIDE_FILE = 'model-override';
 
@@ -104,7 +105,7 @@ export class ModelCommandHandler implements CommandHandler {
       try {
         let content = await readFile(configPath, 'utf-8');
         // Strip JSONC comments
-        content = content.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        content = stripJsonComments(content);
         const config = JSON.parse(content);
 
         const models: string[] = [];

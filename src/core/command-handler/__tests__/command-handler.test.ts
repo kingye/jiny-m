@@ -154,6 +154,57 @@ describe('Command Handler System', () => {
       expect(result.message).toBeDefined();
       expect(result.message).toContain('model');
     });
+
+    test('should parse JSONC config with URLs and comments', async () => {
+      const originalHome = process.env.HOME;
+      const tempHome = join(tmpdir(), `jsonc-test-${Date.now()}`);
+      try {
+        await mkdir(join(tempHome, '.config', 'opencode'), { recursive: true });
+        process.env.HOME = tempHome;
+
+        // Write a JSONC config with comments and URLs
+        const config = `{
+  // API endpoint
+  "baseURL": "https://api.example.com/v1",
+  "model": "gpt-4",
+  "provider": {
+    "openai": {
+      "apiKey": "sk-test",
+      "models": {
+        "gpt-4": {},
+        "gpt-3.5-turbo": {}
+      }
+    },
+    "anthropic": {
+      "apiKey": "sk-anthropic",
+      "models": {
+        "claude-3-opus": {}
+      }
+    }
+  }
+}`;
+        await writeFile(join(tempHome, '.config', 'opencode', 'opencode.jsonc'), config);
+
+        const registry = new CommandRegistry();
+        const handler = registry.get('/model')!;
+        const result = await handler.execute(makeContext([]));
+
+        expect(result.success).toBe(true);
+        expect(result.message).toContain('gpt-4');
+        expect(result.message).toContain('openai/gpt-4');
+        expect(result.message).toContain('openai/gpt-3.5-turbo');
+        expect(result.message).toContain('anthropic/claude-3-opus');
+        // Ensure URL not corrupted
+        expect(result.message).not.toContain('https:');
+      } finally {
+        if (originalHome) {
+          process.env.HOME = originalHome;
+        } else {
+          delete process.env.HOME;
+        }
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('readModelOverride', () => {
