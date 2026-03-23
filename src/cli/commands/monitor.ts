@@ -73,9 +73,6 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 
       logger.info(`Setting up channel: ${channelName}`);
 
-      // Set channel-specific state paths
-      StateManager.setChannel(channelName);
-
       // Get channel-specific watch config
       const watchConfig = configManager.getEffectiveWatchConfig(channelName);
 
@@ -120,7 +117,6 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       const emailConfig = configManager.getEmailChannelConfig();
       if (emailConfig) {
         const watchConfig = configManager.getEffectiveWatchConfig();
-        StateManager.setChannel('email');
 
         const emailInbound = new EmailInboundAdapter(
           'email',
@@ -196,10 +192,10 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const alertingConfig = configManager.getAlertingConfig();
     if (alertingConfig?.enabled) {
       try {
-        // Get the first available outbound adapter
+        // Get the first available outbound adapter for alerting
         const outboundAdapters = registry.getAllOutbound();
-        if (outboundAdapters.length === 0) throw new Error('No outbound adapters');
         const emailOutbound = outboundAdapters[0];
+        if (!emailOutbound) throw new Error('No outbound adapters available');
         const workspaceFolder = configManager.getWorkspaceConfig().folder;
         const alertService = new AlertService(emailOutbound, alertingConfig, workspaceFolder, threadManager);
         alertService.start();
@@ -225,7 +221,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
       try {
         const outboundAdapters = registry.getAllOutbound();
         const emailOutbound = outboundAdapters[0];
-        if (emailOutbound.sendAlert) {
+        if (emailOutbound?.sendAlert) {
           const recipient = alertingConfig.healthCheck?.recipient || alertingConfig.recipient;
           const subject = `${alertingConfig.subjectPrefix || 'Jiny-M'}: Started v${pkg.version}`;
           const body = [
@@ -249,9 +245,6 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
 
     // 10. Start all inbound adapters (blocks — starts monitoring loop)
     for (const adapter of registry.getAllInbound()) {
-      // Set channel-specific state paths before starting each adapter
-      StateManager.setChannel(adapter.channelName);
-      
       await adapter.start({
         onMessage: async (message) => {
           // Display the message

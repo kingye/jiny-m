@@ -81,7 +81,9 @@ export class EmailInboundAdapter implements InboundAdapter {
    * Rules: sender (exact, domain, regex) + subject (prefix, regex).
    */
   matchMessage(message: InboundMessage, patterns: ChannelPattern[]): PatternMatch | null {
-    const emailPatterns = patterns.filter(p => p.channel === 'email' && p.enabled !== false);
+    const emailPatterns = patterns.filter(p =>
+      (p.channel === this.channelName || p.channel === this.channelType) && p.enabled !== false
+    );
 
     for (const pattern of emailPatterns) {
       const rules = pattern.rules as EmailRules;
@@ -129,6 +131,7 @@ export class EmailInboundAdapter implements InboundAdapter {
     };
 
     this.monitor = new EmailMonitor(
+      this.channelName,
       this.imapConfig,
       this.watchConfig,
       [catchAllPattern],

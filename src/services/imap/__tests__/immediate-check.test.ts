@@ -79,6 +79,8 @@ Test body content`;
     processedEmailCount = 0;
     fetchCallCount = 0;
     tempTestDir = join(tmpdir(), `.jiny-test-${Date.now()}`);
+    // Set state path to temp dir — setChannel would be overridden by the monitor,
+    // so we use setStateFilePath which takes precedence when called after setChannel
     StateManager.setStateFilePath(join(tempTestDir, '.state.json'));
     await StateManager.skipMigrationForTests();
   });
@@ -109,6 +111,7 @@ Test body content`;
     const mockImapClient = await setupMockImapClient(mockEmails);
 
     const monitor = new EmailMonitor(
+      'email',
       testImapConfig,
       testWatchConfig,
       testPatterns,
@@ -118,6 +121,8 @@ Test body content`;
       false
     );
 
+    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
+    (monitor as any).setChannelContext = () => {};
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -172,6 +177,7 @@ Test body content`;
     const mockImapClient = await setupMockImapClient(mockEmails);
 
     const monitor = new EmailMonitor(
+      'email',
       testImapConfig,
       testWatchConfig,
       testPatterns,
@@ -181,6 +187,8 @@ Test body content`;
       false
     );
 
+    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
+    (monitor as any).setChannelContext = () => {};
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -224,6 +232,7 @@ Test body content`;
     const mockImapClient = await setupMockImapClient(allEmails);
 
     const monitor = new EmailMonitor(
+      'email',
       testImapConfig,
       testWatchConfig,
       testPatterns,
@@ -233,6 +242,8 @@ Test body content`;
       false
     );
 
+    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
+    (monitor as any).setChannelContext = () => {};
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -276,6 +287,7 @@ Test body content`;
     const mockImapClient = await setupMockImapClient(mockEmails);
 
     const monitor = new EmailMonitor(
+      'email',
       testImapConfig,
       testWatchConfig,
       testPatterns,
@@ -285,6 +297,8 @@ Test body content`;
       false
     );
 
+    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
+    (monitor as any).setChannelContext = () => {};
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();
@@ -326,6 +340,7 @@ Test body content`;
     const mockImapClient = await setupMockImapClient(mockEmails);
 
     const monitor = new EmailMonitor(
+      'email',
       testImapConfig,
       testWatchConfig,
       testPatterns,
@@ -335,6 +350,8 @@ Test body content`;
       false
     );
 
+    // Override channelContext to use test temp dir (prevent setChannel from overriding test state path)
+    (monitor as any).setChannelContext = () => {};
     (monitor as any).imapClient = mockImapClient;
 
     await StateManager.reset();

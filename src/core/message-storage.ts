@@ -25,7 +25,6 @@ import type {
 import type { WorkspaceConfig } from '../types';
 import { logger } from './logger';
 import { parseFileSize } from '../utils/helpers';
-import { StateManager } from './state-manager';
 
 // @ts-ignore - turndown module import
 import TurndownService from 'turndown';
@@ -232,17 +231,11 @@ export class MessageStorage {
     attachmentConfig?: AttachmentDownloadConfig,
     channelName?: string,
   ): Promise<{ messageDir: string; threadPath: string }> {
-    // Use channel-specific workspace if provided, otherwise try StateManager's channel
-    let effectiveWorkspace = this.workspaceFolder;
-    if (channelName) {
-      effectiveWorkspace = this.getChannelWorkspace(channelName);
-    } else {
-      // Fallback: use StateManager's current channel
-      const stateChannel = StateManager.getChannel();
-      if (stateChannel) {
-        effectiveWorkspace = this.getChannelWorkspace(stateChannel);
-      }
-    }
+    // Use channel-specific workspace: explicit channelName > message.channel > global default
+    const channel = channelName || message.channel;
+    const effectiveWorkspace = channel
+      ? this.getChannelWorkspace(channel)
+      : this.workspaceFolder;
     const threadDir = join(effectiveWorkspace, threadName);
 
     // Create thread directory and messages/ subfolder

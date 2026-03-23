@@ -25,8 +25,10 @@ export class EmailMonitor {
   private lastUid: number | null = null;
   private reconnectAttempts: number = 0;
   private lastSuccessfulPoll: number = 0;
+  private channelName: string;
 
   constructor(
+    channelName: string,
     imapConfig: ImapConfig,
     watchConfig: WatchConfig,
     patterns: Pattern[],
@@ -35,6 +37,7 @@ export class EmailMonitor {
     verbose: boolean = false,
     debug: boolean = false
   ) {
+    this.channelName = channelName;
     this.imapClient = new ImapClient(imapConfig, verbose, debug);
     this.watchConfig = watchConfig;
     this.outputConfig = outputConfig;
@@ -43,10 +46,16 @@ export class EmailMonitor {
     this.debug = debug;
   }
 
+  /** Ensure StateManager is set to this monitor's channel before any state operation. */
+  private setChannelContext(): void {
+    StateManager.setChannel(this.channelName);
+  }
+
   async start(options: MonitorOptions): Promise<void> {
     this.running = true;
 
     try {
+      this.setChannelContext();
       await StateManager.ensureInitialized();
       await StateManager.load();
       const lastSeq = StateManager.getLastSequenceNumber();
@@ -126,6 +135,7 @@ export class EmailMonitor {
   }
 
   private async checkForNewEmails(options: MonitorOptions): Promise<void> {
+    this.setChannelContext();
     if (!this.imapClient.isConnected()) {
       logger.warn('Not connected to IMAP server, attempting to reconnect...');
       await this.imapClient.reconnect();
