@@ -420,7 +420,8 @@ function extractBodyFromMd(mdContent: string): string | null {
     }
 
     if (!foundHeader) {
-      if (line.startsWith('## ') && /\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(line)) {
+      // Match both old format (HH:MM AM/PM) and new format (YYYY-MM-DD HH:MM)
+      if (line.startsWith('## ') && /\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(line)) {
         foundHeader = true;
       }
       continue;
