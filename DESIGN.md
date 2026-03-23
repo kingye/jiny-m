@@ -551,8 +551,8 @@ OpenCode calls reply_message MCP tool
 MCP Tool (reply-tool.ts):
   1. Decode base64 context token → validate required fields
   2. Instantiate OutboundAdapter for context.channel
-     - "email" → EmailOutboundAdapter (SMTP)
-     - "feishu" → FeiShuOutboundAdapter (future)
+      - Looks up `channels.{channelName}` in config to determine type and SMTP settings
+      - Falls back to `channels.email.outbound` or legacy `smtp` for backward compat
   3. Read messages/<incomingMessageDir>/received.md for full body
   4. Build fullReplyText = AI reply + prepareBodyForQuoting(full body + recent historical messages)
   5. adapter.sendReply(originalMessage, fullReplyText, attachments)
@@ -705,7 +705,7 @@ The reply context (recipient, topic, channel, threading metadata) is base64-enco
 
 ```typescript
 interface ReplyContext {
-  channel: ChannelType;              // "email" | "feishu" — routing key for outbound adapter
+  channel: ChannelType;              // Channel name (e.g., "jiny283a", "email") — used to look up outbound config
   threadName: string;
   sender: string;                    // Who sent the original message
   recipient: string;                 // Who to reply to
@@ -903,7 +903,7 @@ The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdo
     │   ├── thread-manager.ts            # ThreadManager (queues + workers)
     │   ├── message-storage.ts           # MessageStorage (channel-agnostic)
     │   ├── alert-service.ts             # AlertService (error alerts + health check)
-    │   ├── state-manager.ts             # StateManager (per-channel state dirs)
+    │   ├── state-manager.ts             # StateManager (instance-based, per-channel)
     │   ├── logger.ts                    # Logger (EventEmitter, emits log events)
     │   ├── email-parser.ts              # Utility: stripQuotedHistory, truncateText, etc.
     │   └── security/                    # PathValidator
@@ -1398,7 +1398,9 @@ processMessage():
 
 ### Migration v3: Channel-Agnostic State
 
-Runs automatically on first startup after upgrade (via `StateManager.ensureInitialized()`):
+Runs automatically on first startup after upgrade (via `stateManager.ensureInitialized()`).
+Each `ImapMonitor` has its own `StateManager` instance created via `StateManager.forChannel(channelName)`,
+so concurrent channels do not interfere with each other's state:
 
 1. Move `.jiny/.state.json` → `.jiny/email/.state.json`
 2. Move `.jiny/.processed-uids.txt` → `.jiny/email/.processed-uids.txt`
@@ -1604,7 +1606,7 @@ interface HealthCheckConfig {
 4. Create AlertService (after ThreadManager, so it can be injected as QueueStatsProvider)
    → Pass: emailOutbound, alertingConfig, workspaceFolder, threadManager
    → alertService.start() subscribes to logger events, starts timers
-5. Start all inbound adapters
+5. Start all inbound adapters concurrently via `Promise.all()`
 6. On shutdown (SIGINT/SIGTERM): alertService.stop() flushes pending errors
 ```
 

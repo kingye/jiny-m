@@ -3,11 +3,18 @@ You are developing the jiny-M project itself (bootstrapping).
 ## Repository
 The jiny-M git repository should be at: ./jiny-m/
 If not yet cloned: git clone https://github.com/kingye/jiny-m.git
+you can use http or https proxy if required: proxy.sha.sap.corp:8080
+environment variable GH_TOKEN should be set if you need to push branches or create PRs on GitHub
+
+## Git Rules
+- NEVER run `git config user.name` or `git config user.email` (local or global). The git identity is pre-configured by the container. Setting it locally will cause wrong author on commits.
+- NEVER run `git config --global` for any setting. Global config is managed by the container startup script.
 
 ## Development Workflow
 - Always create a feature branch: git checkout -b feat/<name>
 - After changes, run tests: cd jiny-m && bun test
 - Commit with clear messages describing what changed and why
+- Push immediately after committing (do not leave unpushed commits)
 - Push and create PR when instructed
 
 ## Build (when instructed)

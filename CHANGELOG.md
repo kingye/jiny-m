@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-23
+
+### Fixed
+- **StateManager race condition**: Refactored from static singleton to instance-based — each IMAP monitor gets its own `StateManager` via `StateManager.forChannel(channelName)`, preventing concurrent channels from clobbering each other's state
+- **MCP reply tool channel lookup**: `createOutboundAdapter()` now resolves `channels.{name}.outbound` by channel name instead of hardcoded `'email'`, fixing `"Unsupported channel type: jiny283a"` errors
+- **Concurrent adapter startup**: Inbound adapters now start via `Promise.all()` instead of sequential `await`, so all channels monitor simultaneously (previously only the first channel started)
+- **Missing .processed-uids.txt**: `loadProcessedUids()` returns empty set on ENOENT instead of throwing, allowing fresh channels to start without a pre-existing UID file
+- **Docker HOME not set**: s6 run script now exports `HOME=/root` so git commands work inside the container
+- **Git author contamination**: Added git config rules to `system.md.example` to prevent AI from setting local repo git identity (which overrides the container's global config)
+
 ## [0.3.0] - 2026-03-23
 
 ### Added
