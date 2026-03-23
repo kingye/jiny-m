@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Docker volumes simplified**: Reduced from 4 volume mounts to 2 — single host directory (`JINY_DIR`) maps to `/opt/jiny-m/` containing `.jiny/`, `.env`, and `workspace/`; OpenCode config remains a separate read-only mount
-- **Quoted history reduced**: `MAX_HISTORY_QUOTE` reduced from 5 to 2 (current message + up to 1 previous)
+- **Interleaved thread trail**: Reply emails and prompt context now use `buildThreadTrail()` — reads both `received.md` and `reply.md` interleaved chronologically, with stripped quoted history. `MAX_HISTORY_QUOTE` increased to 6. `MAX_PER_FILE` for prompt context increased from 400 to 800 (stripping removes the bloat).
+- **`parseStoredReply()`**: New parser extracts only the AI's response text from `reply.md`, stopping before quoted history blocks
+- **Prompt context uses `buildThreadTrail()`**: Replaced manual dir iteration with shared trail builder; reply.md entries now have quoted history properly stripped (previously leaked into prompt)
 
 ## [0.2.2] - 2026-03-22
 

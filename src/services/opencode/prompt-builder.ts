@@ -11,12 +11,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import type { InboundMessage } from '../../channels/types';
 import type { OpenCodeConfig } from '../../types';
 import { logger } from '../../core/logger';
-import { stripQuotedHistory, truncateText } from '../../core/email-parser';
+import { stripQuotedHistory, truncateText, buildThreadTrail } from '../../core/email-parser';
 import { serializeContext } from '../../mcp/context';
 
 const MAX_FILES_IN_CONTEXT = 10;
 const MAX_BODY_IN_PROMPT = 2000;
-const MAX_PER_FILE = 400;
+const MAX_PER_FILE = 800;
 const MAX_TOTAL_CONTEXT = 2000;
 const MAX_TOTAL_PROMPT = 6000;
 
@@ -140,72 +140,46 @@ export class PromptBuilder {
 
   /**
    * Build prompt context from thread message files.
-   * Reads received.md and reply.md from message directories,
-   * strips quoted history, truncates to fit token budget.
+   * Uses buildThreadTrail() for interleaved received/reply entries with
+   * stripped quoted history, truncated per-entry and capped by total size.
    */
   async buildPromptContext(threadPath: string): Promise<string> {
     try {
       const messagesDir = join(threadPath, 'messages');
-      let messageDirs: string[];
 
+      // Check if messages/ directory exists, fall back to legacy .jiny/ if not
       try {
         const entries = await readdir(messagesDir, { withFileTypes: true });
-        messageDirs = entries
-          .filter(dirent => dirent.isDirectory())
-          .filter(dirent => !dirent.name.startsWith('.'))
-          .map(dirent => dirent.name)
-          .sort()
-          .slice(-MAX_FILES_IN_CONTEXT);
+        const hasDirs = entries.some(e => e.isDirectory() && !e.name.startsWith('.'));
+        if (!hasDirs) {
+          return this.buildPromptContextLegacy(threadPath);
+        }
       } catch {
         return this.buildPromptContextLegacy(threadPath);
       }
 
-      if (messageDirs.length === 0) {
+      const trail = await buildThreadTrail(threadPath, {
+        maxEntries: MAX_FILES_IN_CONTEXT,
+        maxPerEntry: MAX_PER_FILE,
+      });
+
+      if (trail.length === 0) {
         return this.buildPromptContextLegacy(threadPath);
       }
+
+      // Trail comes back most-recent-first; reverse for chronological order in prompt
+      const chronological = trail.reverse();
 
       const contextParts: string[] = [];
       let totalLength = 0;
 
-      for (const dirName of messageDirs) {
-        const dirPath = join(messagesDir, dirName);
+      for (const entry of chronological) {
+        const label = entry.type === 'reply' ? 'AI Assistant' : entry.sender;
+        const timeStr = formatTimeForContext(entry.timestamp);
+        const part = `### ${label} (${timeStr})\n${entry.bodyText}`;
 
-        // Read received.md
-        try {
-          const receivedPath = join(dirPath, 'received.md');
-          const content = await readFile(receivedPath, 'utf-8');
-          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
-          const trimmedContent = trimMessageContent('received.md', fileContent);
-          const strippedContent = stripQuotedHistory(trimmedContent);
-          totalLength += strippedContent.length;
-
-          if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(strippedContent);
-            break;
-          }
-          contextParts.push(strippedContent);
-        } catch {
-          // No received.md — skip
-        }
-
-        if (totalLength > MAX_TOTAL_CONTEXT) break;
-
-        // Read reply.md
-        try {
-          const replyPath = join(dirPath, 'reply.md');
-          const content = await readFile(replyPath, 'utf-8');
-          let fileContent = content.length > MAX_PER_FILE ? truncateText(content, MAX_PER_FILE) : content;
-          const trimmedContent = trimMessageContent('reply.md', fileContent);
-          totalLength += trimmedContent.length;
-
-          if (totalLength > MAX_TOTAL_CONTEXT) {
-            contextParts.push(trimmedContent);
-            break;
-          }
-          contextParts.push(trimmedContent);
-        } catch {
-          // No reply.md — skip
-        }
+        totalLength += part.length;
+        contextParts.push(part);
 
         if (totalLength > MAX_TOTAL_CONTEXT) break;
       }
@@ -292,4 +266,16 @@ function trimMessageContent(fileName: string, content: string): string {
   }
 
   return bodyLines.join('\n').trim();
+}
+
+/**
+ * Format a timestamp for display in prompt context.
+ */
+function formatTimeForContext(timestamp: Date): string {
+  try {
+    if (timestamp instanceof Date && !isNaN(timestamp.getTime())) {
+      return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+  } catch { /* fallback */ }
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
