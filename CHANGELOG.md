@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-23
+
+### Added
+- **Multi-channel/multi-mailbox support**: Configurable multiple email accounts in a single process
+  - New `channels` config section with named channels (e.g., "283a", "work", "personal")
+  - Each channel has its own IMAP/SMTP config, patterns, and workspace
+  - Per-channel state in `.jiny/<channel-name>/` (`.state.json`, `.processed-uids.txt`)
+  - Channel-specific workspace path via `channels.<name>.workspace`
+  - Global `patterns` applies to all channels; per-channel `patterns` overrides
+
+### Changed
+- **Config structure**: Top-level `imap`/`smtp` replaced by `channels.email` or named channels
+- **Watch config**: Renamed `pollInterval` to `checkInterval` (seconds), added `maxRetries`
+- **Backward compatibility**: Legacy configs auto-migrated; old paths still supported
+- **DESIGN.md**: Updated with multi-channel architecture and new config format
+
+### Fixed
+- **Channel patterns**: Global patterns now correctly filter by `channel` field when matching
+
 ## [0.2.3] - 2026-03-22
 
 ### Fixed
