@@ -11,7 +11,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import type { InboundMessage } from '../../channels/types';
 import type { OpenCodeConfig } from '../../types';
 import { logger } from '../../core/logger';
-import { stripQuotedHistory, truncateText, buildThreadTrail } from '../../core/email-parser';
+import { stripQuotedHistory, truncateText, buildThreadTrail, formatDateTimeISO } from '../../core/email-parser';
 import { serializeContext } from '../../mcp/context';
 
 const MAX_FILES_IN_CONTEXT = 10;
@@ -269,13 +269,13 @@ function trimMessageContent(fileName: string, content: string): string {
 }
 
 /**
- * Format a timestamp for display in prompt context.
+ * Format a timestamp for display in prompt context (YYYY-MM-DD HH:MM).
  */
 function formatTimeForContext(timestamp: Date): string {
   try {
     if (timestamp instanceof Date && !isNaN(timestamp.getTime())) {
-      return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return formatDateTimeISO(timestamp);
     }
   } catch { /* fallback */ }
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatDateTimeISO(new Date());
 }

@@ -330,7 +330,7 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
 
     // After frontmatter, look for header line
     if (!headerLine) {
-      if (trimmed.startsWith('## ') && /\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+      if (trimmed.startsWith('## ') && /\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
         headerLine = trimmed;
         continue;
       }
@@ -424,8 +424,8 @@ export function parseStoredReply(mdContent: string): { sender: string; timestamp
     if (/^[-]{3,}\s*$/.test(trimmed)) {
       break;
     }
-    // Also stop at quoted history header (### SenderName (HH:MM))
-    if (/^###\s+.+\(\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+    // Also stop at quoted history header: ### SenderName (HH:MM AM/PM) or ### SenderName (YYYY-MM-DD HH:MM)
+    if (/^###\s+.+\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
       break;
     }
 
@@ -477,10 +477,28 @@ export interface TrailOptions {
 }
 
 /**
+ * Parse a message directory name (e.g., "2026-03-22_10-00-00") into a Date.
+ * Returns null if the format doesn't match.
+ */
+function parseDirNameAsDate(dirName: string): Date | null {
+  const match = dirName.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  const [, year, month, day, hour, min, sec] = match;
+  const d = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}`);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
  * Build an interleaved thread trail from stored received.md and reply.md files.
  * Reads message directories sorted by date (most recent first), parses both
- * received.md and reply.md from each, strips quoted history from both,
- * and returns an interleaved array of trail entries.
+ * received.md and reply.md from each.
+ *
+ * **Ordering per directory** (most recent first within each dir):
+ *   1. reply.md  — AI's response (happened after receiving)
+ *   2. received.md — user's incoming message
+ *
+ * **Overall ordering** (most recent directory first):
+ *   currentMessage → dir[N] reply → dir[N] received → dir[N-1] reply → dir[N-1] received → ...
  *
  * For received.md: strips email quoted history (forwarded/reply chains).
  * For reply.md: extracts only the AI's response text (no quoted blocks).
@@ -544,6 +562,7 @@ export async function buildThreadTrail(
       if (trail.length >= maxEntries) break;
 
       const dirPath = join(messagesDir, dirName);
+<<<<<<< fix/model-command-issues
 
       let receivedEntry: TrailEntry | null = null;
       let replyEntry: TrailEntry | null = null;
@@ -589,6 +608,61 @@ export async function buildThreadTrail(
       if (trail.length >= maxEntries) break;
       if (replyEntry) {
         trail.push(replyEntry);
+=======
+      const dirTimestamp = parseDirNameAsDate(dirName) || new Date();
+
+      // Read both files from this directory
+      let replyEntry: TrailEntry | null = null;
+      let receivedEntry: TrailEntry | null = null;
+
+      // Parse reply.md — extract AI text only (no quoted blocks)
+      try {
+        const content = await readFile(join(dirPath, 'reply.md'), 'utf-8');
+        const parsed = parseStoredReply(content);
+        if (parsed && parsed.bodyText.trim()) {
+          replyEntry = {
+            sender: parsed.sender,
+            // Use dir timestamp since reply.md has no timestamp in frontmatter
+            timestamp: parsed.timestamp.getTime() === 0 ? dirTimestamp : (
+              // If parseStoredReply returned a fallback "now" timestamp, use dir timestamp instead
+              Math.abs(parsed.timestamp.getTime() - Date.now()) < 60_000 ? dirTimestamp : parsed.timestamp
+            ),
+            topic: parsed.topic,
+            bodyText: maxPerEntry ? truncateText(parsed.bodyText, maxPerEntry) : parsed.bodyText,
+            type: 'reply',
+          };
+        }
+      } catch {
+        // skip missing or unreadable reply.md
+      }
+
+      // Parse received.md — strip email quoted history
+      try {
+        const content = await readFile(join(dirPath, 'received.md'), 'utf-8');
+        const parsed = parseStoredMessage(content);
+        if (parsed && parsed.bodyText.trim()) {
+          const stripped = stripQuotedHistory(parsed.bodyText);
+          if (stripped.trim()) {
+            receivedEntry = {
+              sender: parsed.sender,
+              timestamp: parsed.timestamp,
+              topic: parsed.topic,
+              bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
+              type: 'received',
+            };
+          }
+        }
+      } catch {
+        // skip missing or unreadable received.md
+      }
+
+      // Push reply FIRST (more recent — AI responded after receiving), then received
+      if (replyEntry && trail.length < maxEntries) {
+        trail.push(replyEntry);
+      }
+      if (receivedEntry && trail.length < maxEntries) {
+        trail.push(receivedEntry);
+>>>>>>> main
       }
     }
   } catch {
@@ -628,6 +702,19 @@ export async function prepareBodyForQuoting(
 }
 
 /**
+ * Format a Date as "YYYY-MM-DD HH:MM" (ISO-like, 24h).
+ * Used in quoted history headers and prompt context.
+ */
+export function formatDateTimeISO(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hour = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${min}`;
+}
+
+/**
  * Format a quoted reply block in markdown.
  * Takes the body text (already stripped of nested quoted history by the caller).
  *
@@ -641,15 +728,15 @@ export function formatQuotedReply(
 ): string {
   if (!bodyText.trim()) return '';
 
-  // Format time with Invalid Date fallback
+  // Format as YYYY-MM-DD HH:MM
   let timeStr: string;
   try {
     const d = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
     timeStr = (d instanceof Date && !isNaN(d.getTime()))
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      ? formatDateTimeISO(d)
+      : formatDateTimeISO(new Date());
   } catch {
-    timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    timeStr = formatDateTimeISO(new Date());
   }
 
   // Extract display name — strip angle brackets and nested brackets
