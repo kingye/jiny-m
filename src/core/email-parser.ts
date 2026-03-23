@@ -521,7 +521,10 @@ export async function buildThreadTrail(
 
     // If no explicit excludeMessageDir but we have currentMessageTimestamp, find matching dir
     if (!excludeDir && currentMessageTimestamp) {
-      const ts = currentMessageTimestamp;
+      // Ensure we have a Date object (timestamp might be a string from context)
+      const ts = typeof currentMessageTimestamp === 'string' 
+        ? new Date(currentMessageTimestamp) 
+        : currentMessageTimestamp;
       const timestampStr = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}_${String(ts.getHours()).padStart(2, '0')}-${String(ts.getMinutes()).padStart(2, '0')}`;
       // Find directory that matches the timestamp (could have seconds, so check prefix)
       const match = dirNames.find(name => name.startsWith(timestampStr));
