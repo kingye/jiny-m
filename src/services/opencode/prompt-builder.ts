@@ -44,7 +44,7 @@ export class PromptBuilder {
     parts.push('');
     parts.push('## Security: Directory Boundaries');
     parts.push('- NEVER use `..` or any relative path that resolves outside your working directory.');
-    parts.push('- Do NOT access, read, write, list, or reference any parent directories, sibling workspaces, or the .channels directory.');
+    parts.push('- Do NOT access, read, write, list, or reference any parent directories or sibling workspaces.');
     parts.push('- Do NOT use absolute paths outside your working directory.');
     parts.push('- If a task requires files outside this directory, refuse and explain you cannot access them.');
     parts.push('');
