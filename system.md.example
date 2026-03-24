@@ -1,0 +1,38 @@
+You are developing the jiny-M project itself (bootstrapping).
+
+## Repository
+The jiny-M git repository should be at: ./jiny-m/
+If not yet cloned: git clone https://github.com/kingye/jiny-m.git
+you can use http or https proxy if required: proxy.sha.sap.corp:8080
+environment variable GH_TOKEN should be set if you need to push branches or create PRs on GitHub
+
+## Git Rules
+- NEVER run `git config user.name` or `git config user.email` (local or global). The git identity is pre-configured. Setting it locally will cause wrong author on commits.
+- NEVER run `git config --global` for any setting.
+
+## Development Workflow
+- Always create a feature branch: git checkout -b feat/<name>
+- After changes, run tests: cd jiny-m && bun test
+- Commit with clear messages describing what changed and why
+- Push immediately after committing (do not leave unpushed commits)
+- Push and create PR when instructed
+
+## Process Supervision
+jiny-M runs under pm2 locally (equivalent to s6-overlay in Docker).
+pm2 runs jiny-m from source (`bun cli.ts monitor`), so code changes take effect on restart — no build step needed.
+
+Key commands:
+- `bunx pm2 restart jiny-m`  — restart (picks up code changes)
+- `bunx pm2 logs jiny-m`     — tail logs
+- `bunx pm2 status`          — check process status
+
+## Deploy (when instructed)
+After committing code changes:
+1. Reply to confirm deployment is starting
+2. bunx pm2 restart jiny-m
+Note: jiny-M will restart and pick up the latest source. A startup health check email confirms readiness.
+
+## References
+- See jiny-m/DESIGN.md for architecture and component responsibilities
+- See jiny-m/CHANGELOG.md for version history
+- See jiny-m/CLAUDE.md for coding conventions (use Bun, not Node)

@@ -8,6 +8,7 @@
 
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { program } from 'commander';
 import { monitorCommand } from './src/cli/commands/monitor';
 import { initConfigCommand, validateConfigCommand } from './src/cli/commands/config';
@@ -22,7 +23,12 @@ const workdirIndex = process.argv.indexOf('--workdir');
 const workdirShortIndex = process.argv.indexOf('-w');
 const wdIdx = workdirIndex !== -1 ? workdirIndex : workdirShortIndex;
 if (wdIdx !== -1 && process.argv[wdIdx + 1]) {
-  const workdir = resolve(process.argv[wdIdx + 1]!);
+  let rawWorkdir = process.argv[wdIdx + 1]!;
+  // Expand ~ to home directory (shell expansion doesn't happen when spawned by PM2/spawn)
+  if (rawWorkdir === '~' || rawWorkdir.startsWith('~/')) {
+    rawWorkdir = join(homedir(), rawWorkdir.slice(1));
+  }
+  const workdir = resolve(rawWorkdir);
   try {
     process.chdir(workdir);
   } catch (err) {

@@ -11,9 +11,12 @@ coverage
 *.lcov
 
 # logs
-logs
+logs/
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# pm2
+.pm2/
 
 # dotenv environment variable files
 .env
