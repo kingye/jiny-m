@@ -160,10 +160,6 @@ export class ConfigManager {
     };
   }
   
-  getWorkspaceConfig() {
-    return this.getConfig().workspace;
-  }
-  
   getReplyConfig() {
     return this.getConfig().reply;
   }

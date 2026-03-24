@@ -505,7 +505,6 @@ export function validateConfig(config: any): Config {
   const result: Config = {
     patterns,
     output: validateOutputConfig(config.output),
-    workspace: validateWorkspaceConfig(config.workspace),
     reply: validateReplyConfig(config.reply),
   };
 

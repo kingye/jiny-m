@@ -152,9 +152,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     }
 
     // 4. Create storage
-    const workspaceConfig = configManager.getWorkspaceConfig();
-    const storage = new MessageStorage(workspaceConfig);
-    await storage.init();
+    const storage = new MessageStorage({ folder: '' });
 
     // 4b. Initialize channel-specific workspaces
     for (const channelName of channelNames) {
@@ -196,8 +194,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
         const outboundAdapters = registry.getAllOutbound();
         const emailOutbound = outboundAdapters[0];
         if (!emailOutbound) throw new Error('No outbound adapters available');
-        const workspaceFolder = configManager.getWorkspaceConfig().folder;
-        const alertService = new AlertService(emailOutbound, alertingConfig, workspaceFolder, threadManager);
+        const alertService = new AlertService(emailOutbound, alertingConfig, storage, threadManager);
         alertService.start();
         activeAlertService = alertService;
       } catch {
@@ -276,19 +273,24 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     // 11. Register shutdown cleanup (delete session files to prevent stale sessions on restart)
     shutdownCleanup = async () => {
       try {
-        const entries = await readdir(workspaceConfig.folder, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          const sessionFile = join(workspaceConfig.folder, entry.name, '.jiny', 'session.json');
-          try {
-            await unlink(sessionFile);
-            logger.debug('Deleted session file on shutdown', { thread: entry.name });
-          } catch {
-            // File doesn't exist — fine
+        for (const channelName of channelNames) {
+          const workspace = storage.getChannelWorkspace(channelName);
+          const entries = await readdir(workspace, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const sessionFile = join(workspace, entry.name, '.jiny', 'session.json');
+            try {
+              await unlink(sessionFile);
+              logger.debug('Deleted session file on shutdown', { thread: entry.name });
+            } catch {
+              // File doesn't exist — fine
+            }
           }
         }
-      } catch {
-        // Workspace dir may not exist — fine
+      } catch (error) {
+        logger.warn('Failed to clean up session files on shutdown', {
+          error: (error as Error).message,
+        });
       }
     };
 

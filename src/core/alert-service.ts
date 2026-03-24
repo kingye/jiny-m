@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { AlertingConfig, OutboundAdapter } from '../types';
 import { logger, type LogEvent } from './logger';
+import { MessageStorage } from './message-storage';
 
 /** A buffered error entry with context. */
 interface ErrorEntry {
@@ -61,7 +62,7 @@ export interface QueueStatsProvider {
 export class AlertService {
   private config: AlertingConfig;
   private outboundAdapter: OutboundAdapter;
-  private workspaceFolder: string;
+  private messageStorage: MessageStorage;
   private queueStatsProvider?: QueueStatsProvider;
 
   /** Buffered error entries waiting to be flushed. */
@@ -84,12 +85,12 @@ export class AlertService {
   constructor(
     outboundAdapter: OutboundAdapter,
     config: AlertingConfig,
-    workspaceFolder: string,
+    messageStorage: MessageStorage,
     queueStatsProvider?: QueueStatsProvider,
   ) {
     this.outboundAdapter = outboundAdapter;
     this.config = config;
-    this.workspaceFolder = workspaceFolder;
+    this.messageStorage = messageStorage;
     this.queueStatsProvider = queueStatsProvider;
   }
 
@@ -513,7 +514,8 @@ export class AlertService {
         lines.push(`---------------`);
 
         for (const threadName of threadNames) {
-          const logContent = await this.readReplyToolLog(threadName);
+          const channel = this.getThreadChannel(threadName, errors);
+          const logContent = await this.readReplyToolLog(threadName, channel);
           lines.push(``);
           lines.push(`### Thread: ${threadName}`);
           lines.push(``);
@@ -548,11 +550,22 @@ export class AlertService {
   }
 
   /**
-   * Read the last N lines of a thread's reply-tool.log.
+   * Extract channel name for a thread from error entries.
    */
-  private async readReplyToolLog(threadName: string): Promise<string | null> {
+  private getThreadChannel(threadName: string, errors: ErrorEntry[]): string | undefined {
+    const error = errors.find(e => e.thread === threadName);
+    return error?.meta?.channel as string;
+  }
+
+  /**
+   * Read last N lines of a thread's reply-tool.log.
+   */
+  private async readReplyToolLog(threadName: string, channel?: string): Promise<string | null> {
     const tailLines = this.config.replyToolLogTailLines ?? 50;
-    const logPath = join(this.workspaceFolder, threadName, '.jiny', 'reply-tool.log');
+    const workspace = channel
+      ? this.messageStorage.getChannelWorkspace(channel)
+      : this.messageStorage.getEffectiveWorkspace();
+    const logPath = join(workspace, threadName, '.jiny', 'reply-tool.log');
 
     try {
       const content = await readFile(logPath, 'utf-8');

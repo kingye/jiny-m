@@ -275,8 +275,6 @@ export interface Config {
   channels?: Record<string, ChannelConfig>;
   /** Unified pattern list with channel-specific rules. */
   patterns: (ChannelPattern | Pattern)[];
-  /** Workspace storage settings (global default). */
-  workspace: WorkspaceConfig;
   /** Worker pool settings. */
   worker?: WorkerConfig;
   /** Reply generation settings (global default). */
