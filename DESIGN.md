@@ -881,30 +881,40 @@ The MCP tool logs to `<thread-dir>/.jiny/reply-tool.log` (file-based, since stdo
 ```
 <root-dir>/
 ├── .jiny/
-│   ├── config.json                      # Project config
-│   └── email/                           # Email channel state
-│       ├── .state.json                  # IMAP monitor state (seq, uid, migration)
-│       └── .processed-uids.txt         # Processed UIDs
-├── workspace/
-│   ├── <thread-dir-1>/                  # Thread directory (OpenCode cwd for this thread)
-│   │   ├── messages/                    # Per-message directories (conversation turns)
-│   │   │   ├── 2026-03-19_23-02-20/    # Turn 1
-│   │   │   │   ├── received.md          # Incoming message (full body, canonical record)
-│   │   │   │   ├── reply.md             # AI reply (alongside received)
-│   │   │   │   └── report.pdf           # Saved inbound attachment
-│   │   │   └── 2026-03-19_23-10-00/    # Turn 2
-│   │   │       ├── received.md
-│   │   │       └── reply.md
-│   │   ├── .jiny/                       # Internal state only
-│   │   │   ├── session.json             # AI session state
-│   │   │   ├── reply-tool.log           # MCP tool log (per-thread)
-│   │   │   └── reply-sent.flag          # Signal file (transient)
-│   │   ├── .opencode/                   # OpenCode internal directory
-│   │   ├── opencode.json                # Per-thread OpenCode config
-│   │   └── opencode_skills.pptx         # AI-generated working files
-│   └── <thread-dir-2>/
+│   └── config.json                      # Master config (channels, patterns, worker, reply, alerting)
+├── <channel-1>/                         # Channel directory (e.g., jiny283a)
+│   ├── .email/                          # Channel state
+│   │   ├── .state.json                  # IMAP monitor state (seq, uid, migration)
+│   │   └── .processed-uids.txt         # Processed UIDs
+│   └── workspace/                       # Thread workspaces for this channel
+│       ├── <thread-dir-1>/              # Thread directory (OpenCode cwd for this thread)
+│       │   ├── messages/                # Per-message directories (conversation turns)
+│       │   │   ├── 2026-03-19_23-02-20/ # Turn 1
+│       │   │   │   ├── received.md      # Incoming message (full body, canonical record)
+│       │   │   │   ├── reply.md         # AI reply (alongside received)
+│       │   │   │   └── report.pdf       # Saved inbound attachment
+│       │   │   └── 2026-03-19_23-10-00/ # Turn 2
+│       │   │       ├── received.md
+│       │   │       └── reply.md
+│       │   ├── .jiny/                   # Internal state only
+│       │   │   ├── session.json         # AI session state
+│       │   │   ├── reply-tool.log       # MCP tool log (per-thread)
+│       │   │   └── reply-sent.flag      # Signal file (transient)
+│       │   ├── .opencode/               # OpenCode internal directory
+│       │   ├── opencode.json            # Per-thread OpenCode config
+│       │   └── system.md                # Optional thread-specific AI instructions
+│       └── <thread-dir-2>/
+│           └── ...
+├── <channel-2>/                         # Another channel
+│   ├── .email/
+│   └── workspace/
 │       └── ...
-└── src/
+└── workspace/                           # Global workspace (fallback, rarely used)
+```
+
+### Source Tree (jiny-m codebase)
+```
+src/
     ├── channels/
     │   ├── types.ts                     # InboundMessage, adapter interfaces
     │   ├── registry.ts                  # ChannelRegistry
@@ -1206,25 +1216,25 @@ Jiny-M supports multiple email accounts (mailboxes) running in a single process.
 
 #### Directory Structure (Multi-Mailbox)
 
-**Per-channel state** in `.jiny/<channel-name>/`:
+Each channel has its own directory at the root level with `.email/` for state and `workspace/` for threads:
 ```
-<project-root>/
-├── config.json                    # Master config with channels{}
+<root-dir>/
 ├── .jiny/
-│   ├── config.json                # Main config (copy or reference)
-│   └── 283a/                      # Channel: 283a
-│       ├── .state.json            # IMAP state for 283a mailbox
-│       └── .processed-uids.txt    # Processed UIDs
-└── workspace/                     # Channel workspace (from config: channels.283a.workspace)
-    └── <thread-dir>/
-        ├── messages/              # Per-message directories
-        ├── .jiny/                 # Thread internal state
-        │   ├── session.json
-        │   ├── model-override
-        │   ├── mode-override
-        │   └── reply-sent.flag
-        ├── opencode.json
-        └── system.md              # Optional thread-specific prompt
+│   └── config.json                # Master config with channels{}
+├── <channel-name>/                # e.g., jiny283a
+│   ├── .email/                    # Channel state
+│   │   ├── .state.json            # IMAP state for this mailbox
+│   │   └── .processed-uids.txt   # Processed UIDs
+│   └── workspace/                 # Thread workspaces for this channel
+│       └── <thread-dir>/
+│           ├── messages/           # Per-message directories
+│           ├── .jiny/              # Thread internal state
+│           │   ├── session.json
+│           │   ├── model-override
+│           │   ├── mode-override
+│           │   └── reply-sent.flag
+│           ├── opencode.json
+│           └── system.md           # Optional thread-specific prompt
 ```
 
 #### Behavior
@@ -1630,9 +1640,11 @@ The AlertService requires the email outbound adapter to be connected. It shares 
 
 ### Overview
 
-jiny-M can be used to develop itself — a bootstrapping setup where the AI agent receives development instructions via email, makes code changes, runs tests, builds releases, and deploys them. The system runs in a Docker container with a supervisor that handles restarts after deployment.
+jiny-M can be used to develop itself — a bootstrapping setup where the AI agent receives development instructions via email, makes code changes, runs tests, builds releases, and deploys them.
 
-### Architecture
+### Docker Bootstrapping Architecture
+
+When running in Docker, s6-overlay provides process supervision. The codebase is baked into the image as compiled binaries, and data is mounted via volumes:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1655,11 +1667,12 @@ jiny-M can be used to develop itself — a bootstrapping setup where the AI agen
 │  Volumes (mounted from host):                                    │
 │    /opt/jiny-m/.jiny/config.json   ← config (from host)         │
 │    /opt/jiny-m/.env                ← secrets (Bun auto-loads)    │
-│    /opt/jiny-m/workspace/          ← workspace (from host)       │
-│      bootstrapping-jiny-M/         ← thread directory            │
-│        system.md                   ← thread-specific AI prompt   │
-│        jiny-m/                     ← git clone of repo           │
-│        messages/                   ← email conversation          │
+│    /opt/jiny-m/<channel>/          ← per-channel directory       │
+│      workspace/                    ← thread workspaces           │
+│        bootstrapping-jiny-M/       ← thread directory            │
+│          system.md                 ← thread-specific AI prompt   │
+│          jiny-m/                   ← git clone of repo           │
+│          messages/                 ← email conversation          │
 │    /root/.config/opencode/         ← OpenCode config (from host) │
 │      opencode.jsonc                ← API keys, providers         │
 │                                                                  │
@@ -1725,7 +1738,9 @@ Build and deploy are independent operations. The user can request either one sep
 1. Verify /tmp/jiny-m-new exists
 2. cp /tmp/jiny-m-new /usr/local/bin/jiny-m
 3. Reply "deploying, restarting..."
-4. s6-svc -r /run/service/jiny-m   ← trigger supervisor restart
+4. s6-svc -r /run/service/jiny-m   ← trigger supervisor restart (Docker)
+   — OR —
+   pm2 restart jiny-m              ← trigger supervisor restart (local)
    → jiny-M stops
    → supervisor restarts with new binary
    → new jiny-M sends startup health check email
@@ -1818,7 +1833,7 @@ exec /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m
 - `config.json` uses `${VAR}` syntax (e.g., `${IMAP_PASSWORD}`)
 - `ConfigManager.expandEnvVars()` substitutes from `process.env`
 - Bun auto-loads `.env` from `/opt/jiny-m/.env` (working directory)
-- The s6 run script sources `.env` before starting (for GH_TOKEN in bash)
+- The s6 run script sources `.env` before starting
 
 **Local model connectivity:**
 - Inside container, `host.containers.internal` (podman) or `host.docker.internal` (docker) reaches the host machine

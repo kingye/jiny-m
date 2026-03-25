@@ -366,9 +366,15 @@ export function validateAlertingConfig(config: any): AlertingConfig | undefined 
     healthCheck = validateHealthCheckConfig(config.healthCheck);
   }
 
+  // Alert channel validation
+  if (config.channel !== undefined && typeof config.channel !== 'string') {
+    throw new ConfigValidationError('alerting.channel must be a string');
+  }
+
   return {
     enabled: config.enabled ?? true,
     recipient: config.recipient,
+    channel: config.channel,
     batchIntervalMinutes: config.batchIntervalMinutes ?? 5,
     maxErrorsPerBatch: config.maxErrorsPerBatch ?? 50,
     subjectPrefix: config.subjectPrefix ?? 'Jiny-M Alert',
@@ -505,7 +511,6 @@ export function validateConfig(config: any): Config {
   const result: Config = {
     patterns,
     output: validateOutputConfig(config.output),
-    workspace: validateWorkspaceConfig(config.workspace),
     reply: validateReplyConfig(config.reply),
   };
 

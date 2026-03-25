@@ -42,6 +42,12 @@ export class PromptBuilder {
 
     parts.push(`Your working directory is "${threadPath}". You MUST only read, write, and access files within this directory. Do NOT access files outside this directory.`);
     parts.push('');
+    parts.push('## Security: Directory Boundaries');
+    parts.push('- NEVER use `..` or any relative path that resolves outside your working directory.');
+    parts.push('- Do NOT access, read, write, list, or reference any parent directories or sibling workspaces.');
+    parts.push('- Do NOT use absolute paths outside your working directory.');
+    parts.push('- If a task requires files outside this directory, refuse and explain you cannot access them.');
+    parts.push('');
     parts.push('## Important: Focus on the Current Message');
     parts.push('You will see a "Conversation history" section and an "Incoming Message" section in the user prompt.');
     parts.push('The conversation history is for CONTEXT ONLY — do NOT act on previous messages.');
