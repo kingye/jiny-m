@@ -239,6 +239,8 @@ export interface AlertingConfig {
   enabled: boolean;
   /** Email address to send alerts to. */
   recipient: string;
+  /** Which channel's SMTP to use for sending alerts (optional, defaults to first available channel). */
+  channel?: string;
   /** How often to flush buffered errors (in minutes, default: 5). */
   batchIntervalMinutes?: number;
   /** Maximum errors to include in a single alert email (default: 50). */

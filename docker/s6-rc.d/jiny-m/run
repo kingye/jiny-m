@@ -12,10 +12,10 @@ if [ -f .env ]; then
 fi
 
 # Configure git to use GH_TOKEN for GitHub HTTPS access (if provided)
-if [ -n "$GH_TOKEN" ]; then
-  git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-  git config --global user.name "${GIT_USER_NAME:-jiny-m}"
-  git config --global user.email "${GIT_USER_EMAIL:-jiny-m@bot}"
-fi
+# if [ -n "$GH_TOKEN" ]; then
+#  git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+#   git config --global user.name "${GIT_USER_NAME:-jiny-m}"
+#  git config --global user.email "${GIT_USER_EMAIL:-jiny-m@bot}"
+# fi
 
 exec /usr/local/bin/jiny-m monitor --workdir /opt/jiny-m --debug

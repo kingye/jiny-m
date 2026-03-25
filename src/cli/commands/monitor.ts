@@ -190,9 +190,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     const alertingConfig = configManager.getAlertingConfig();
     if (alertingConfig?.enabled) {
       try {
-        // Get the first available outbound adapter for alerting
-        const outboundAdapters = registry.getAllOutbound();
-        const emailOutbound = outboundAdapters[0];
+        const emailOutbound = registry.getOutboundWithFallback(alertingConfig.channel);
         if (!emailOutbound) throw new Error('No outbound adapters available');
         const alertService = new AlertService(emailOutbound, alertingConfig, storage, threadManager);
         alertService.start();
@@ -216,8 +214,7 @@ export async function monitorCommand(options: MonitorCommandOptions): Promise<vo
     // 9. Send startup notification email (before starting inbound adapters which block)
     if (activeAlertService && alertingConfig?.enabled) {
       try {
-        const outboundAdapters = registry.getAllOutbound();
-        const emailOutbound = outboundAdapters[0];
+        const emailOutbound = registry.getOutboundWithFallback(alertingConfig.channel);
         if (emailOutbound?.sendAlert) {
           const recipient = alertingConfig.healthCheck?.recipient || alertingConfig.recipient;
           const subject = `${alertingConfig.subjectPrefix || 'Jiny-M'}: Started v${pkg.version}`;

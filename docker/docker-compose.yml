@@ -1,13 +1,12 @@
 services:
   jiny-m:
+    image: jiny-m:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
     volumes:
-      - ${JINY_DIR:-./jiny-data}:/opt/jiny-m
+      - ${CHANNELS_DIR:-./}:/opt/jiny-m
       - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/opencode.jsonc:ro
-    environment:
-      - GH_TOKEN
-      - GIT_USER_NAME
-      - GIT_USER_EMAIL
+      - ${JINY_M_DIR}:/opt/jiny-m/jiny283a/workspace/jiny-M/jiny-m
+      - ${NETWORKCALC_DIR}:/opt/jiny-m/jiny283a/workspace/networkcalc/c21-networkcalculation-srv
     restart: unless-stopped
