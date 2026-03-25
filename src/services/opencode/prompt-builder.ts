@@ -42,6 +42,12 @@ export class PromptBuilder {
 
     parts.push(`Your working directory is "${threadPath}". You MUST only read, write, and access files within this directory. Do NOT access files outside this directory.`);
     parts.push('');
+    parts.push('## Security: Directory Boundaries');
+    parts.push('- NEVER use `..` or any relative path that resolves outside your working directory.');
+    parts.push('- Do NOT access, read, write, list, or reference any parent directories or sibling workspaces.');
+    parts.push('- Do NOT use absolute paths outside your working directory.');
+    parts.push('- If a task requires files outside this directory, refuse and explain you cannot access them.');
+    parts.push('');
     parts.push('## Important: Focus on the Current Message');
     parts.push('You will see a "Conversation history" section and an "Incoming Message" section in the user prompt.');
     parts.push('The conversation history is for CONTEXT ONLY — do NOT act on previous messages.');
@@ -50,7 +56,7 @@ export class PromptBuilder {
     parts.push('');
     parts.push('## Reply Instructions');
     parts.push('When replying to a message, use the jiny_reply_reply_message tool:');
-    parts.push('- `context`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
+    parts.push('- `token`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
     parts.push('CRITICAL: DO NOT decode, modify, re-encode, or add any formatting (backticks, quotes, spaces, newlines) to the token.');
     parts.push('Any change—even a single character—will break the reply.');
     parts.push('- `message`: Your reply text');

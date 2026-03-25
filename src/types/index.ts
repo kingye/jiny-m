@@ -239,6 +239,8 @@ export interface AlertingConfig {
   enabled: boolean;
   /** Email address to send alerts to. */
   recipient: string;
+  /** Which channel's SMTP to use for sending alerts (optional, defaults to first available channel). */
+  channel?: string;
   /** How often to flush buffered errors (in minutes, default: 5). */
   batchIntervalMinutes?: number;
   /** Maximum errors to include in a single alert email (default: 50). */
@@ -275,8 +277,6 @@ export interface Config {
   channels?: Record<string, ChannelConfig>;
   /** Unified pattern list with channel-specific rules. */
   patterns: (ChannelPattern | Pattern)[];
-  /** Workspace storage settings (global default). */
-  workspace: WorkspaceConfig;
   /** Worker pool settings. */
   worker?: WorkerConfig;
   /** Reply generation settings (global default). */

@@ -88,4 +88,17 @@ export class ChannelRegistry {
   hasOutbound(channel: string): boolean {
     return this.outboundAdapters.has(channel);
   }
+
+  /**
+   * Get outbound adapter for a specific channel name.
+   * Falls back to the first available outbound adapter if channel not found or not specified.
+   */
+  getOutboundWithFallback(channel?: string): OutboundAdapter | undefined {
+    if (channel) {
+      const adapter = this.outboundAdapters.get(channel);
+      if (adapter) return adapter;
+    }
+    const all = Array.from(this.outboundAdapters.values());
+    return all[0];
+  }
 }

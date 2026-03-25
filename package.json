@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build": "bun run build.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "kill-opencode": "pkill -f 'opencode.*serve.*--port=491' || true"
   },
   "devDependencies": {
     "@types/bun": "latest",
