@@ -61,7 +61,7 @@ export class ConfigManager {
   /** Get email channel config (from channels.email or legacy imap/smtp). */
   getEmailChannelConfig(): EmailChannelConfig | undefined {
     const config = this.getConfig();
-    if (config.channels?.email) return config.channels.email;
+    if (config.channels?.email) return config.channels.email as EmailChannelConfig;
     // Legacy fallback
     if (config.imap && config.smtp) {
       return {

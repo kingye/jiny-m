@@ -322,7 +322,8 @@ async function handleReplyMessage(
 
   // 11. Store reply in thread folder (full reply text = exactly what was sent)
   try {
-    const storage = new MessageStorage(config.workspace);
+    const workspace = config.workspace || { folder: '' };
+    const storage = new MessageStorage(workspace);
     await storage.storeReply(threadPath, fullReplyText, replyContext.incomingMessageDir);
     log('INFO', 'Reply stored', { threadPath });
   } catch (error) {

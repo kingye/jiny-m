@@ -120,7 +120,7 @@ export class ModelCommandHandler implements CommandHandler {
 
       // Get default model from result
       if (result.data.default) {
-        const [providerId, modelId] = Object.entries(result.data.default)[0];
+        const [providerId, modelId]: [string, string] = Object.entries(result.data.default)[0];
         if (modelId) {
           defaultModel = `${providerId}/${modelId}`;
         }
