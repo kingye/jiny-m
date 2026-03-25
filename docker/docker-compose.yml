@@ -10,4 +10,5 @@ services:
       - ${JINY_M_DIR}:/opt/jiny-m/jiny283a/workspace/jiny-M/jiny-m
       - ${NETWORKCALC_DIR}:/opt/jiny-m/jiny283a/workspace/networkcalc/c21-networkcalculation-srv
       - ${CHANNELS_DIR}/.netrc:/root/.netrc
+      - ${CHANNELS_DIR}/gh_hosts.yml:/root/.config/gh/hosts.yml
     restart: unless-stopped
