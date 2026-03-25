@@ -14,14 +14,14 @@ import type {
   ChannelPattern,
   AttachmentDownloadConfig,
   WorkerConfig,
-} from '../channels/types';
-import type { ReplyConfig, AiGeneratedReply } from '../types';
-import { ChannelRegistry } from '../channels/registry';
-import { MessageStorage } from './message-storage';
-import { OpenCodeService } from '../services/opencode';
-import { CommandRegistry } from './command-handler';
-import { formatQuotedReply, prepareBodyForQuoting } from './email-parser';
-import { logger } from './logger';
+} from "../channels/types";
+import type { ReplyConfig, AiGeneratedReply } from "../types";
+import { ChannelRegistry } from "../channels/registry";
+import { MessageStorage } from "./message-storage";
+import { OpenCodeService } from "../services/opencode";
+import { CommandRegistry } from "./command-handler";
+import { formatQuotedReply, prepareBodyForQuoting } from "./email-parser";
+import { logger } from "./logger";
 
 /** Queued item waiting to be processed. */
 interface QueueItem {
@@ -83,7 +83,8 @@ export class ThreadManager {
     this.channelRegistry = options.channelRegistry;
     this.replyConfig = options.replyConfig;
     this.maxConcurrentThreads = options.workerConfig?.maxConcurrentThreads ?? 3;
-    this.maxQueueSizePerThread = options.workerConfig?.maxQueueSizePerThread ?? 10;
+    this.maxQueueSizePerThread =
+      options.workerConfig?.maxQueueSizePerThread ?? 10;
   }
 
   /**
@@ -103,7 +104,7 @@ export class ThreadManager {
     }
 
     if (queue.size >= this.maxQueueSizePerThread) {
-      logger.warn('Thread queue full, dropping message', {
+      logger.warn("Thread queue full, dropping message", {
         thread: threadName,
         queueSize: queue.size,
         maxSize: this.maxQueueSizePerThread,
@@ -113,7 +114,7 @@ export class ThreadManager {
     }
 
     queue.push({ message, threadName, patternMatch, pattern });
-    logger.debug('Message enqueued', {
+    logger.debug("Message enqueued", {
       thread: threadName,
       queueSize: queue.size,
       activeWorkers: this.activeWorkers,
@@ -135,7 +136,7 @@ export class ThreadManager {
       // No slot available — add to pending list
       if (!this.pendingThreads.includes(threadName)) {
         this.pendingThreads.push(threadName);
-        logger.debug('Thread waiting for worker slot', {
+        logger.debug("Thread waiting for worker slot", {
           thread: threadName,
           activeWorkers: this.activeWorkers,
           pendingThreads: this.pendingThreads.length,
@@ -147,7 +148,7 @@ export class ThreadManager {
     this.activeWorkers++;
     queue.processing = true;
 
-    logger.info('Worker started for thread', {
+    logger.info("Worker started for thread", {
       thread: threadName,
       activeWorkers: this.activeWorkers,
       maxConcurrent: this.maxConcurrentThreads,
@@ -158,7 +159,7 @@ export class ThreadManager {
       queue.processing = false;
       this.activeWorkers--;
 
-      logger.debug('Worker finished', {
+      logger.debug("Worker finished", {
         thread: threadName,
         activeWorkers: this.activeWorkers,
         queueRemaining: queue.size,
@@ -173,7 +174,10 @@ export class ThreadManager {
       }
 
       // Check if any pending threads can start
-      while (this.pendingThreads.length > 0 && this.activeWorkers < this.maxConcurrentThreads) {
+      while (
+        this.pendingThreads.length > 0 &&
+        this.activeWorkers < this.maxConcurrentThreads
+      ) {
         const next = this.pendingThreads.shift()!;
         this.tryProcessNext(next);
       }
@@ -199,7 +203,7 @@ export class ThreadManager {
         attachmentConfig,
       );
 
-      logger.info('Message stored, generating reply...', {
+      logger.info("Message stored, generating reply...", {
         thread: threadName,
         messageDir,
         channel: message.channel,
@@ -218,59 +222,80 @@ export class ThreadManager {
               subject: message.topic,
             },
             threadPath,
-            config: { maxFileSize: '25mb', allowedExtensions: [] },
+            config: { maxFileSize: "25mb", allowedExtensions: [] },
           });
           if (result.message) {
-            logger.info('Command result', { command: cmd.handler.name, message: result.message });
+            logger.info("Command result", {
+              command: cmd.handler.name,
+              message: result.message,
+            });
             commandResults.push(`${cmd.handler.name}: ${result.message}`);
           }
           if (!result.success && result.error) {
-            logger.warn('Command failed', { command: cmd.handler.name, error: result.error });
+            logger.warn("Command failed", {
+              command: cmd.handler.name,
+              error: result.error,
+            });
             commandResults.push(`${cmd.handler.name}: ${result.error}`);
           }
         }
         // Strip executed command lines from the message body so the AI doesn't see them
-        const commandNames = new Set(commands.map(c => c.handler.name));
+        const commandNames = new Set(commands.map((c) => c.handler.name));
         if (message.content.text) {
           message.content.text = message.content.text
-            .split('\n')
-            .filter(line => {
+            .split("\n")
+            .filter((line) => {
               const trimmed = line.trim();
-              if (!trimmed.startsWith('/')) return true;
+              if (!trimmed.startsWith("/")) return true;
               const cmdName = trimmed.split(/\s+/)[0]?.toLowerCase();
               return !cmdName || !commandNames.has(cmdName);
             })
-            .join('\n');
+            .join("\n");
         }
 
         // If body is empty after stripping commands, send command results directly
         // and skip AI processing.
-        if (commandResults.length > 0 && (!message.content.text || !message.content.text.trim())) {
-          // Reply disabled → store only, no outbound reply
+
+        // If body is empty after stripping commands, send command results directly
+        // and skip AI processing (prevents wasteful AI calls for command-only messages)
+        if (commandResults.length > 0) {
+          logger.info("reply command results", {
+            commandCount: commands.length,
+            commandResults: commandResults,
+            thread: threadName,
+          });
+          // Reply disabled -> store only, no outbound reply
           if (!this.replyConfig.enabled) {
-            logger.info('Reply disabled, command results stored only', { thread: threadName });
+            logger.info("Reply disabled, command results stored only", {
+              thread: threadName,
+            });
             return;
           }
 
-          const summary = commandResults.join('\n');
+          const summary = commandResults.join("\n");
           await this.sendDirectReply(message, summary, threadPath, messageDir);
-          return;
         }
       }
 
       // 3. Check if reply is enabled
       if (!this.replyConfig.enabled) {
-        logger.info('Reply disabled, message stored only', { thread: threadName });
+        logger.info("Reply disabled, message stored only", {
+          thread: threadName,
+        });
         return;
       }
 
       // 4. Generate AI reply
-      if (this.replyConfig.mode === 'opencode' && this.opencode) {
-        const aiReply = await this.opencode.generateReply(message, threadPath, messageDir);
+      if (this.replyConfig.mode === "opencode" && this.opencode) {
+        const aiReply = await this.opencode.generateReply(
+          message,
+          threadPath,
+          messageDir,
+        );
 
         // If the MCP tool sent the reply, we're done
         if (aiReply.replySentByTool) {
-          logger.info('Reply sent via MCP reply_message tool', {
+          logger.info("Reply sent via MCP reply_message tool", {
             thread: threadName,
             channel: message.channel,
           });
@@ -278,23 +303,26 @@ export class ThreadManager {
         }
 
         // Fallback: MCP tool not used, send via outbound adapter directly
-        logger.info('MCP tool not used, sending reply via outbound adapter', {
+        logger.info("MCP tool not used, sending reply via outbound adapter", {
           thread: threadName,
           channel: message.channel,
         });
 
         await this.sendFallbackReply(message, aiReply, threadPath, messageDir);
-
-      } else if (this.replyConfig.mode === 'static') {
-        const replyText = this.replyConfig.text || '';
+      } else if (this.replyConfig.mode === "static") {
+        const replyText = this.replyConfig.text || "";
         if (replyText) {
-          await this.sendDirectReply(message, replyText, threadPath, messageDir);
+          await this.sendDirectReply(
+            message,
+            replyText,
+            threadPath,
+            messageDir,
+          );
         }
       }
-
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to process message', {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to process message", {
         thread: threadName,
         channel: message.channel,
         error: msg,
@@ -315,21 +343,35 @@ export class ThreadManager {
     const replyText = aiReply.text;
 
     if (!replyText || replyText.trim().length === 0) {
-      logger.warn('Generated reply is empty, skipping send', { channel: message.channel });
-      await this.storage.storeReply(threadPath, '[Empty reply - not sent]', messageDir);
+      logger.warn("Generated reply is empty, skipping send", {
+        channel: message.channel,
+      });
+      await this.storage.storeReply(
+        threadPath,
+        "[Empty reply - not sent]",
+        messageDir,
+      );
       return;
     }
 
     // Build full reply with quoted history (same as MCP tool path)
-    const fullReplyText = await this.buildFullReplyText(replyText, message, threadPath, messageDir);
+    const fullReplyText = await this.buildFullReplyText(
+      replyText,
+      message,
+      threadPath,
+      messageDir,
+    );
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
       await adapter.sendReply(message, fullReplyText);
-      logger.info('Fallback reply sent', { channel: message.channel });
+      logger.info("Fallback reply sent", { channel: message.channel });
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to send fallback reply', { channel: message.channel, error: msg });
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to send fallback reply", {
+        channel: message.channel,
+        error: msg,
+      });
     }
 
     await this.storage.storeReply(threadPath, fullReplyText, messageDir);
@@ -345,15 +387,23 @@ export class ThreadManager {
     messageDir: string,
   ): Promise<void> {
     // Build full reply with quoted history
-    const fullReplyText = await this.buildFullReplyText(replyText, message, threadPath, messageDir);
+    const fullReplyText = await this.buildFullReplyText(
+      replyText,
+      message,
+      threadPath,
+      messageDir,
+    );
 
     try {
       const adapter = this.channelRegistry.getOutbound(message.channel);
       await adapter.sendReply(message, fullReplyText);
-      logger.info('Direct reply sent', { channel: message.channel });
+      logger.info("Direct reply sent", { channel: message.channel });
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to send direct reply', { channel: message.channel, error: msg });
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to send direct reply", {
+        channel: message.channel,
+        error: msg,
+      });
     }
 
     await this.storage.storeReply(threadPath, fullReplyText, messageDir);
@@ -364,7 +414,12 @@ export class ThreadManager {
    * The message.content.text contains the full body (cleaned at InboundAdapter boundary,
    * NOT stripped — stripping only happens in PromptBuilder for AI token budget).
    */
-  private async buildFullReplyText(replyText: string, message: InboundMessage, threadPath: string, messageDir: string): Promise<string> {
+  private async buildFullReplyText(
+    replyText: string,
+    message: InboundMessage,
+    threadPath: string,
+    messageDir: string,
+  ): Promise<string> {
     let quotedHistory: string;
     try {
       quotedHistory = await prepareBodyForQuoting(
@@ -373,27 +428,28 @@ export class ThreadManager {
           sender: message.sender,
           timestamp: message.timestamp,
           topic: message.topic,
-          bodyText: message.content.text || '',
+          bodyText: message.content.text || "",
         },
         undefined, // maxHistory (default)
         messageDir,
       );
     } catch (error) {
       // Fallback to single message quoting if historical quoting fails
-      logger.warn('Failed to prepare quoted history, falling back to single message', {
-        thread: threadPath,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      logger.warn(
+        "Failed to prepare quoted history, falling back to single message",
+        {
+          thread: threadPath,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
       quotedHistory = formatQuotedReply(
         message.sender,
         message.timestamp,
         message.topic,
-        message.content.text || '',
+        message.content.text || "",
       );
     }
-    return quotedHistory
-      ? `${replyText}\n\n${quotedHistory}`
-      : replyText;
+    return quotedHistory ? `${replyText}\n\n${quotedHistory}` : replyText;
   }
 
   /** Get current queue statistics. */
@@ -405,11 +461,13 @@ export class ThreadManager {
     return {
       activeWorkers: this.activeWorkers,
       pendingThreads: this.pendingThreads.length,
-      threadQueues: Array.from(this.threadQueues.entries()).map(([name, queue]) => ({
-        thread: name,
-        size: queue.size,
-        processing: queue.processing,
-      })),
+      threadQueues: Array.from(this.threadQueues.entries()).map(
+        ([name, queue]) => ({
+          thread: name,
+          size: queue.size,
+          processing: queue.processing,
+        }),
+      ),
     };
   }
 }

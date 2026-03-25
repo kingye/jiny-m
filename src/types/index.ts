@@ -13,7 +13,7 @@ import type {
   PatternMatch as _PatternMatch,
   AttachmentDownloadConfig as _AttachmentDownloadConfig,
   WorkerConfig as _WorkerConfig,
-} from '../channels/types';
+} from "../channels/types";
 
 export type ChannelType = _ChannelType;
 export type InboundMessage = _InboundMessage;
@@ -74,7 +74,7 @@ export interface EmailChannelConfig {
 
 /** Multi-mailbox: Named channel config with type, settings, and optional per-channel workspace. */
 export interface ChannelConfig {
-  type: 'email' | 'feishu' | string;
+  type: "email" | "feishu" | string;
   inbound?: ImapConfig;
   outbound?: SmtpConfig;
   watch?: WatchConfig;
@@ -157,7 +157,7 @@ export interface OutputConfig {
   truncateLength?: number;
 }
 
-export type OutputFormat = 'text' | 'json';
+export type OutputFormat = "text" | "json";
 
 // ============================================================================
 // Workspace / Storage
@@ -181,8 +181,8 @@ export interface ThreadSession {
 export interface OpenCodeConfig {
   enabled: boolean;
   hostname?: string;
-  model?: string;                   // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
-  smallModel?: string;              // "provider/model" format for lightweight tasks
+  model?: string; // "provider/model" format, e.g. "SiliconFlow/Pro/zai-org/GLM-4.7"
+  smallModel?: string; // "provider/model" format for lightweight tasks
   systemPrompt?: string;
   includeThreadHistory?: boolean;
   contextSecret?: string;
@@ -207,7 +207,7 @@ export interface GeneratedFile {
 
 export interface ReplyConfig {
   enabled: boolean;
-  mode: 'static' | 'opencode';
+  mode: "static" | "opencode";
   text?: string;
   opencode?: OpenCodeConfig;
   attachments?: AttachmentConfig;
@@ -215,7 +215,7 @@ export interface ReplyConfig {
 
 export interface AttachmentConfig {
   enabled: boolean;
-  maxFileSize: number | string;  // bytes or human-readable like "10mb"
+  maxFileSize: number | string; // bytes or human-readable like "10mb"
   allowedExtensions: string[];
 }
 

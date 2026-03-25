@@ -1,8 +1,8 @@
-import type { Email, Attachment } from '../types';
-import * as mailparser from 'mailparser';
-import { stripReplyPrefix } from '../utils/helpers';
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import type { Email, Attachment } from "../types";
+import * as mailparser from "mailparser";
+import { stripReplyPrefix } from "../utils/helpers";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const MAX_HISTORY_QUOTE = 6;
 
@@ -10,45 +10,55 @@ const MAX_HISTORY_QUOTE = 6;
  * Derive a thread name from the subject by stripping Re:/Fwd: and optional additional prefixes.
  * This groups replies and forwards under the same thread folder.
  */
-function deriveThreadName(subject: string, additionalPrefixes?: string[]): string {
+function deriveThreadName(
+  subject: string,
+  additionalPrefixes?: string[],
+): string {
   let result = subject;
-  
+
   // First strip reply/forward prefixes
   result = stripReplyPrefix(result);
-  
+
   // Then strip any additional prefixes (e.g., "Urgent:", "Alert:")
   if (additionalPrefixes && additionalPrefixes.length > 0) {
     // Sort by length (longest first) to match most specific first
-    const sortedPrefixes = [...additionalPrefixes].sort((a, b) => b.length - a.length);
-    
+    const sortedPrefixes = [...additionalPrefixes].sort(
+      (a, b) => b.length - a.length,
+    );
+
     for (const prefix of sortedPrefixes) {
       // Match prefix followed by optional whitespace and any common separator
       // Separators: : ： - _ ~ | / & $ # @ ! + = > » →
-      const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escapedPrefix}\\s*[:\\-_~|/&$#@!+=»→：]?\\s*`, 'i');
+      const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(
+        `^${escapedPrefix}\\s*[:\\-_~|/&$#@!+=»→：]?\\s*`,
+        "i",
+      );
       if (regex.test(result)) {
-        result = result.replace(regex, '');
+        result = result.replace(regex, "");
         break; // Only strip one additional prefix (the matched one)
       }
     }
   }
-  
+
   // Strip any remaining leading punctuation/separators
-  result = result.replace(/^[\s\-_~|/&$#@!+=»→：:]+/, '');
-  
-  return result.trim() || 'untitled';
+  result = result.replace(/^[\s\-_~|/&$#@!+=»→：:]+/, "");
+
+  return result.trim() || "untitled";
 }
 
 /**
  * Sanitize a string for use as a filesystem directory/file name.
  */
 function sanitizeForFilename(name: string): string {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '')
-    .substring(0, 200) || 'untitled';
+  return (
+    name
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+      .replace(/\s+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "")
+      .substring(0, 200) || "untitled"
+  );
 }
 
 /**
@@ -57,7 +67,7 @@ function sanitizeForFilename(name: string): string {
  * Keeps only the new content from the sender.
  */
 export function stripQuotedHistory(text: string): string {
-  const lines = text.split('\n');
+  const lines = text.split("\n");
   const result: string[] = [];
 
   const replyHeaderPatterns = [
@@ -73,10 +83,7 @@ export function stripQuotedHistory(text: string): string {
     /^Subject[:：]/i,
   ];
 
-  const dividerPatterns = [
-    /^[-=_~\*]{3,}\s*$/,
-    /^[_~\*]{8,}\s*$/,
-  ];
+  const dividerPatterns = [/^[-=_~\*]{3,}\s*$/, /^[_~\*]{8,}\s*$/];
 
   const englishOnPattern = /^On\s+.*wrote[:.]?$/i;
   const quotedLinePattern = /^>+?\s*\S/;
@@ -144,7 +151,7 @@ export function stripQuotedHistory(text: string): string {
       }
     }
 
-    if (trimmed === '') {
+    if (trimmed === "") {
       if (i + 1 < lines.length) {
         const nextLine = lines[i + 1];
         if (!nextLine) continue;
@@ -166,11 +173,11 @@ export function stripQuotedHistory(text: string): string {
     result.push(line);
   }
 
-  let cleaned = result.join('\n').trim();
+  let cleaned = result.join("\n").trim();
 
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
 
-  cleaned = cleaned.replace(/^>\s*/gm, '');
+  cleaned = cleaned.replace(/^>\s*/gm, "");
 
   return cleaned.trim();
 }
@@ -185,38 +192,51 @@ export function truncateText(text: string, maxLength: number): string {
   }
 
   const half = Math.floor(maxLength / 2);
-  return text.substring(0, half) + ' ... [truncated] ... ' + text.substring(text.length - half);
+  return (
+    text.substring(0, half) +
+    " ... [truncated] ... " +
+    text.substring(text.length - half)
+  );
 }
 
 export class EmailParser {
-  async parseEmail(rawEmail: string | Buffer, emailId: string, uid: number): Promise<Email> {
+  async parseEmail(
+    rawEmail: string | Buffer,
+    emailId: string,
+    uid: number,
+  ): Promise<Email> {
     try {
       const parsed = await mailparser.simpleParser(rawEmail);
-      
-      const fromAddress = parsed.from 
-        ? (Array.isArray(parsed.from) ? parsed.from[0]?.text || '' : parsed.from.text || '')
-        : '';
-        
-      const toAddresses = parsed.to 
-        ? (Array.isArray(parsed.to) 
-            ? parsed.to.map((a: any) => a.text || '').filter(Boolean)
-            : [parsed.to.text || ''].filter(Boolean))
+
+      const fromAddress = parsed.from
+        ? Array.isArray(parsed.from)
+          ? parsed.from[0]?.text || ""
+          : parsed.from.text || ""
+        : "";
+
+      const toAddresses = parsed.to
+        ? Array.isArray(parsed.to)
+          ? parsed.to.map((a: any) => a.text || "").filter(Boolean)
+          : [parsed.to.text || ""].filter(Boolean)
         : [];
 
       // Extract thread-related headers
       const messageId = parsed.messageId || undefined;
       const inReplyTo = parsed.inReplyTo || undefined;
       const references = parsed.references
-        ? (Array.isArray(parsed.references) ? parsed.references : [parsed.references])
+        ? Array.isArray(parsed.references)
+          ? parsed.references
+          : [parsed.references]
         : undefined;
 
       // Derive thread ID: use the first reference (original message) or the inReplyTo or messageId
-      const threadId = (references && references.length > 0 ? references[0] : undefined)
-        || inReplyTo
-        || messageId
-        || undefined;
+      const threadId =
+        (references && references.length > 0 ? references[0] : undefined) ||
+        inReplyTo ||
+        messageId ||
+        undefined;
 
-      const subject = parsed.subject || '';
+      const subject = parsed.subject || "";
       const threadName = sanitizeForFilename(deriveThreadName(subject));
 
       return {
@@ -227,28 +247,31 @@ export class EmailParser {
         subject,
         date: parsed.date || new Date(),
         body: {
-          text: parsed.text || '',
-          html: parsed.html || '',
+          text: parsed.text || "",
+          html: parsed.html || "",
         },
         headers: parsed.headers as unknown as Record<string, string>,
-        attachments: parsed.attachments && parsed.attachments.length > 0 
-          ? parsed.attachments.map((att: any) => ({
-              filename: att.filename || 'attachment',
-              contentType: att.contentType || 'application/octet-stream',
-              size: att.size || 0,
-              contentId: att.contentId,
-              disposition: att.contentDisposition,
-              content: att.content, // Preserve binary Buffer for inbound attachment saving
-            }))
-          : undefined,
+        attachments:
+          parsed.attachments && parsed.attachments.length > 0
+            ? parsed.attachments.map((att: any) => ({
+                filename: att.filename || "attachment",
+                contentType: att.contentType || "application/octet-stream",
+                size: att.size || 0,
+                contentId: att.contentId,
+                disposition: att.contentDisposition,
+                content: att.content, // Preserve binary Buffer for inbound attachment saving
+              }))
+            : undefined,
         threadId,
         messageId,
         inReplyTo,
         references,
       };
     } catch (error) {
-      console.error('Error parsing email:', error);
-      throw new Error(`Failed to parse email: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error("Error parsing email:", error);
+      throw new Error(
+        `Failed to parse email: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 }
@@ -273,38 +296,42 @@ export { deriveThreadName, sanitizeForFilename };
  */
 export function cleanEmailBody(text: string): string {
   return text
-    .split('\n')
-    .map(line => {
+    .split("\n")
+    .map((line) => {
       // Clean 主題/Subject lines: normalize to single Re:
       // May appear at start of line (with optional > quote prefix) or mid-line
-      return line.replace(/((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
+      return line.replace(
+        /((?:^|\s)(?:>\s*)*)(主题[:：]\s*|Subject[:：]\s*)((?:Re[:：]\s*|回复[:：]\s*|Fwd?[:：]\s*|转发[:：]\s*)*)(.*)/gi,
         (_match, prefix, label, _prefixes, subject) => {
           const cleanSubject = stripReplyPrefix(subject);
           return `${prefix}${label}Re: ${cleanSubject}`;
-        }
+        },
       );
     })
-    .join('\n');
+    .join("\n");
 }
 
 /**
  * Parse a stored markdown message (received.md) into its components.
  * Returns null if the format is invalid.
  */
-export function parseStoredMessage(mdContent: string): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
-  const lines = mdContent.split('\n');
+export function parseStoredMessage(
+  mdContent: string,
+): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
+  const lines = mdContent.split("\n");
   let inFrontmatter = false;
   let pastFrontmatter = false;
   const frontmatter: Record<string, string> = {};
-  let headerLine = '';
+  let headerLine = "";
   const bodyLines: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (!line) continue;
     const trimmed = line.trimEnd();
 
     if (!pastFrontmatter) {
-      if (trimmed === '---') {
+      if (trimmed === "---") {
         if (inFrontmatter) {
           pastFrontmatter = true;
           inFrontmatter = false;
@@ -318,11 +345,13 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
         if (match) {
           const key = match[1];
           let value = match[2];
-          // Remove surrounding quotes if present
-          if (value.startsWith('"') && value.endsWith('"')) {
-            value = value.substring(1, value.length - 1);
+          if (key && value) {
+            // Remove surrounding quotes if present
+            if (value.startsWith('"') && value.endsWith('"')) {
+              value = value.substring(1, value.length - 1);
+            }
+            frontmatter[key] = value;
           }
-          frontmatter[key] = value;
         }
       }
       continue;
@@ -330,7 +359,10 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
 
     // After frontmatter, look for header line
     if (!headerLine) {
-      if (trimmed.startsWith('## ') && /\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+      if (
+        trimmed.startsWith("## ") &&
+        /\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)
+      ) {
         headerLine = trimmed;
         continue;
       }
@@ -339,7 +371,7 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
     }
 
     // After header, collect body lines until closing separator
-    if (trimmed === '---' || trimmed === '--- ') {
+    if (trimmed === "---" || trimmed === "--- ") {
       break;
     }
     bodyLines.push(line);
@@ -351,7 +383,7 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
 
   // Extract sender from header line: "## SenderName (HH:MM AM/PM)"
   const senderMatch = headerLine.match(/^##\s+(.+?)\s+\(/);
-  const sender = senderMatch ? senderMatch[1].trim() : 'Unknown';
+  const sender = senderMatch?.[1]?.trim() || "Unknown";
 
   // Parse timestamp from frontmatter (ISO string) or default to current date
   let timestamp: Date;
@@ -368,9 +400,9 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
     timestamp = new Date();
   }
 
-  const topic = frontmatter.topic || '';
-  const bodyText = bodyLines.join('\n').trim();
-  return { sender, timestamp, topic, bodyText };
+  const topic = frontmatter.topic || "";
+  const bodyText = bodyLines.join("\n").trim();
+  return { sender, timestamp, topic: topic as string, bodyText };
 }
 
 /**
@@ -379,8 +411,10 @@ export function parseStoredMessage(mdContent: string): { sender: string; timesta
  * (the trailing `--- ` separator or `### SenderName (time)` blocks).
  * Returns null if the format is invalid.
  */
-export function parseStoredReply(mdContent: string): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
-  const lines = mdContent.split('\n');
+export function parseStoredReply(
+  mdContent: string,
+): { sender: string; timestamp: Date; topic: string; bodyText: string } | null {
+  const lines = mdContent.split("\n");
   let inFrontmatter = false;
   let pastFrontmatter = false;
   let foundHeader = false;
@@ -393,7 +427,7 @@ export function parseStoredReply(mdContent: string): { sender: string; timestamp
 
     // Parse frontmatter
     if (!pastFrontmatter) {
-      if (trimmed === '---') {
+      if (trimmed === "---") {
         if (inFrontmatter) {
           pastFrontmatter = true;
           inFrontmatter = false;
@@ -413,7 +447,7 @@ export function parseStoredReply(mdContent: string): { sender: string; timestamp
 
     // After frontmatter, look for header line (## AI Assistant or similar)
     if (!foundHeader) {
-      if (trimmed.startsWith('## ')) {
+      if (trimmed.startsWith("## ")) {
         foundHeader = true;
       }
       continue;
@@ -425,7 +459,11 @@ export function parseStoredReply(mdContent: string): { sender: string; timestamp
       break;
     }
     // Also stop at quoted history header: ### SenderName (HH:MM AM/PM) or ### SenderName (YYYY-MM-DD HH:MM)
-    if (/^###\s+.+\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(trimmed)) {
+    if (
+      /^###\s+.+\((\d{4}-\d{2}-\d{2}\s+)?\d{1,2}:\d{2}\s*(AM|PM)?\)/.test(
+        trimmed,
+      )
+    ) {
       break;
     }
 
@@ -436,17 +474,19 @@ export function parseStoredReply(mdContent: string): { sender: string; timestamp
     return null;
   }
 
-  const bodyText = bodyLines.join('\n').trim();
+  const bodyText = bodyLines.join("\n").trim();
   // reply.md doesn't store timestamp in frontmatter, use current time as fallback
   let timestamp = new Date();
   if (frontmatter.timestamp) {
     try {
       const d = new Date(frontmatter.timestamp);
       if (!isNaN(d.getTime())) timestamp = d;
-    } catch { /* use default */ }
+    } catch {
+      /* use default */
+    }
   }
 
-  return { sender: 'AI Assistant', timestamp, topic: '', bodyText };
+  return { sender: "AI Assistant", timestamp, topic: "", bodyText };
 }
 
 /**
@@ -457,7 +497,7 @@ export interface TrailEntry {
   timestamp: Date;
   topic: string;
   bodyText: string;
-  type: 'received' | 'reply';
+  type: "received" | "reply";
 }
 
 /**
@@ -471,7 +511,12 @@ export interface TrailOptions {
   /** Exclude this message directory (the current message being replied to). */
   excludeMessageDir?: string;
   /** Prepend the current message as the first entry (most recent). */
-  includeCurrentMessage?: { sender: string; timestamp: Date; topic: string; bodyText: string };
+  includeCurrentMessage?: {
+    sender: string;
+    timestamp: Date;
+    topic: string;
+    bodyText: string;
+  };
 }
 
 /**
@@ -479,7 +524,9 @@ export interface TrailOptions {
  * Returns null if the format doesn't match.
  */
 function parseDirNameAsDate(dirName: string): Date | null {
-  const match = dirName.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+  const match = dirName.match(
+    /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})/,
+  );
   if (!match) return null;
   const [, year, month, day, hour, min, sec] = match;
   const d = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}`);
@@ -507,8 +554,9 @@ export async function buildThreadTrail(
   threadPath: string,
   options: TrailOptions,
 ): Promise<TrailEntry[]> {
-  const { maxEntries, maxPerEntry, excludeMessageDir, includeCurrentMessage } = options;
-  const messagesDir = join(threadPath, 'messages');
+  const { maxEntries, maxPerEntry, excludeMessageDir, includeCurrentMessage } =
+    options;
+  const messagesDir = join(threadPath, "messages");
   const trail: TrailEntry[] = [];
 
   // Prepend current message (stripped) if provided
@@ -519,21 +567,21 @@ export async function buildThreadTrail(
       timestamp: includeCurrentMessage.timestamp,
       topic: includeCurrentMessage.topic,
       bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
-      type: 'received',
+      type: "received",
     });
   }
 
   try {
     const entries = await readdir(messagesDir, { withFileTypes: true });
     let dirNames = entries
-      .filter(dirent => dirent.isDirectory())
-      .filter(dirent => !dirent.name.startsWith('.'))
-      .map(dirent => dirent.name)
+      .filter((dirent) => dirent.isDirectory())
+      .filter((dirent) => !dirent.name.startsWith("."))
+      .map((dirent) => dirent.name)
       .sort()
       .reverse(); // most recent first
 
     if (excludeMessageDir) {
-      dirNames = dirNames.filter(name => name !== excludeMessageDir);
+      dirNames = dirNames.filter((name) => name !== excludeMessageDir);
     } else if (includeCurrentMessage) {
       // Assume the most recent directory is the current message, skip it
       dirNames = dirNames.slice(1);
@@ -551,19 +599,24 @@ export async function buildThreadTrail(
 
       // Parse reply.md — extract AI text only (no quoted blocks)
       try {
-        const content = await readFile(join(dirPath, 'reply.md'), 'utf-8');
+        const content = await readFile(join(dirPath, "reply.md"), "utf-8");
         const parsed = parseStoredReply(content);
         if (parsed && parsed.bodyText.trim()) {
           replyEntry = {
             sender: parsed.sender,
             // Use dir timestamp since reply.md has no timestamp in frontmatter
-            timestamp: parsed.timestamp.getTime() === 0 ? dirTimestamp : (
-              // If parseStoredReply returned a fallback "now" timestamp, use dir timestamp instead
-              Math.abs(parsed.timestamp.getTime() - Date.now()) < 60_000 ? dirTimestamp : parsed.timestamp
-            ),
+            timestamp:
+              parsed.timestamp.getTime() === 0
+                ? dirTimestamp
+                : // If parseStoredReply returned a fallback "now" timestamp, use dir timestamp instead
+                  Math.abs(parsed.timestamp.getTime() - Date.now()) < 60_000
+                  ? dirTimestamp
+                  : parsed.timestamp,
             topic: parsed.topic,
-            bodyText: maxPerEntry ? truncateText(parsed.bodyText, maxPerEntry) : parsed.bodyText,
-            type: 'reply',
+            bodyText: maxPerEntry
+              ? truncateText(parsed.bodyText, maxPerEntry)
+              : parsed.bodyText,
+            type: "reply",
           };
         }
       } catch {
@@ -572,7 +625,7 @@ export async function buildThreadTrail(
 
       // Parse received.md — strip email quoted history
       try {
-        const content = await readFile(join(dirPath, 'received.md'), 'utf-8');
+        const content = await readFile(join(dirPath, "received.md"), "utf-8");
         const parsed = parseStoredMessage(content);
         if (parsed && parsed.bodyText.trim()) {
           const stripped = stripQuotedHistory(parsed.bodyText);
@@ -581,8 +634,10 @@ export async function buildThreadTrail(
               sender: parsed.sender,
               timestamp: parsed.timestamp,
               topic: parsed.topic,
-              bodyText: maxPerEntry ? truncateText(stripped, maxPerEntry) : stripped,
-              type: 'received',
+              bodyText: maxPerEntry
+                ? truncateText(stripped, maxPerEntry)
+                : stripped,
+              type: "received",
             };
           }
         }
@@ -613,7 +668,12 @@ export async function buildThreadTrail(
  */
 export async function prepareBodyForQuoting(
   threadPath: string,
-  currentMessage: { sender: string; timestamp: Date; topic: string; bodyText: string },
+  currentMessage: {
+    sender: string;
+    timestamp: Date;
+    topic: string;
+    bodyText: string;
+  },
   maxHistory?: number,
   excludeMessageDir?: string,
 ): Promise<string> {
@@ -625,13 +685,18 @@ export async function prepareBodyForQuoting(
 
   const quotedBlocks: string[] = [];
   for (const entry of trail) {
-    const quoted = formatQuotedReply(entry.sender, entry.timestamp, entry.topic, entry.bodyText);
+    const quoted = formatQuotedReply(
+      entry.sender,
+      entry.timestamp,
+      entry.topic,
+      entry.bodyText,
+    );
     if (quoted) {
       quotedBlocks.push(quoted);
     }
   }
 
-  return quotedBlocks.join('\n\n');
+  return quotedBlocks.join("\n\n");
 }
 
 /**
@@ -640,10 +705,10 @@ export async function prepareBodyForQuoting(
  */
 export function formatDateTimeISO(d: Date): string {
   const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hour = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hour = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:${min}`;
 }
 
@@ -659,38 +724,39 @@ export function formatQuotedReply(
   subject: string,
   bodyText: string,
 ): string {
-  if (!bodyText.trim()) return '';
+  if (!bodyText.trim()) return "";
 
   // Format as YYYY-MM-DD HH:MM
   let timeStr: string;
   try {
-    const d = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
-    timeStr = (d instanceof Date && !isNaN(d.getTime()))
-      ? formatDateTimeISO(d)
-      : formatDateTimeISO(new Date());
+    const d = typeof timestamp === "string" ? new Date(timestamp) : timestamp;
+    timeStr =
+      d instanceof Date && !isNaN(d.getTime())
+        ? formatDateTimeISO(d)
+        : formatDateTimeISO(new Date());
   } catch {
     timeStr = formatDateTimeISO(new Date());
   }
 
   // Extract display name — strip angle brackets and nested brackets
-  let fromName = sender || 'Unknown';
-  if (fromName.includes('<')) {
-    fromName = fromName.split('<')[0]?.trim().replace(/['"]/g, '') || fromName;
+  let fromName = sender || "Unknown";
+  if (fromName.includes("<")) {
+    fromName = fromName.split("<")[0]?.trim().replace(/['"]/g, "") || fromName;
   }
-  fromName = fromName.replace(/\s*\[.*$/, '').trim();
-  if (!fromName) fromName = sender || 'Unknown';
+  fromName = fromName.replace(/\s*\[.*$/, "").trim();
+  if (!fromName) fromName = sender || "Unknown";
 
   const lines: string[] = [];
-  lines.push('---');
+  lines.push("---");
   lines.push(`### ${fromName} (${timeStr})`);
-  lines.push('> ' + subject);
-  lines.push('');
+  lines.push("> " + subject);
+  lines.push("");
 
   const quotedBody = bodyText
-    .split('\n')
+    .split("\n")
     .map((line: string) => `> ${line}`)
-    .join('\n');
+    .join("\n");
   lines.push(quotedBody);
 
-  return lines.join('\n');
+  return lines.join("\n");
 }
