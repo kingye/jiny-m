@@ -10,11 +10,6 @@
   "scripts": {
     "build": "bun run build.ts",
     "test": "bun test",
-    "start": "bunx pm2 start ecosystem.config.cjs",
-    "stop": "bunx pm2 stop jiny-m",
-    "restart": "bunx pm2 restart jiny-m",
-    "logs": "bunx pm2 logs jiny-m",
-    "status": "bunx pm2 status",
     "kill-opencode": "pkill -f 'opencode.*serve.*--port=491' || true"
   },
   "devDependencies": {

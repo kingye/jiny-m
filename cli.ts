@@ -24,7 +24,7 @@ const workdirShortIndex = process.argv.indexOf('-w');
 const wdIdx = workdirIndex !== -1 ? workdirIndex : workdirShortIndex;
 if (wdIdx !== -1 && process.argv[wdIdx + 1]) {
   let rawWorkdir = process.argv[wdIdx + 1]!;
-  // Expand ~ to home directory (shell expansion doesn't happen when spawned by PM2/spawn)
+  // Expand ~ to home directory (shell expansion doesn't happen when spawned)
   if (rawWorkdir === '~' || rawWorkdir.startsWith('~/')) {
     rawWorkdir = join(homedir(), rawWorkdir.slice(1));
   }
