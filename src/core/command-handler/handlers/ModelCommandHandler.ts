@@ -1,9 +1,8 @@
-import { join } from 'node:path';
-import { readFile, unlink, mkdir } from 'node:fs/promises';
-import type { CommandHandler, CommandContext, CommandResult } from '../CommandHandler';
-import { createOpencodeClient } from '@opencode-ai/sdk';
-import { logger } from '../../logger';
-import { stripJsonComments } from '../../../utils/jsonc';
+import { join } from "node:path";
+import { readFile, unlink, mkdir } from "node:fs/promises";
+import type { CommandHandler, CommandContext, CommandResult } from "../CommandHandler";
+import { logger } from "../../logger";
+import { stripJsonComments } from "../../../utils/jsonc";
 
 const MODEL_OVERRIDE_FILE = 'model-override';
 
@@ -94,56 +93,11 @@ export class ModelCommandHandler implements CommandHandler {
     // Check current override
     let currentOverride: string | null = null;
     try {
-      currentOverride = (await readFile(join(threadPath, '.jiny', MODEL_OVERRIDE_FILE), 'utf-8')).trim();
+      currentOverride = (await readFile(join(threadPath, ".jiny", MODEL_OVERRIDE_FILE), "utf-8")).trim();
     } catch { /* no override */ }
 
-    // Use OpenCode SDK to fetch available models
-    try {
-      const client = createOpencodeClient();
-      const result = await client.provider.list();
-      
-      if (!result.data?.all) {
-        throw new Error('No provider data returned');
-      }
-
-      const models: string[] = [];
-      let defaultModel = '(not set)';
-
-      // Collect models from all providers
-      for (const provider of result.data.all) {
-        if (provider.models) {
-          for (const modelId of Object.keys(provider.models)) {
-            models.push(`${provider.id}/${modelId}`);
-          }
-        }
-      }
-
-      // Get default model from result
-      if (result.data.default) {
-        const entry = Object.entries(result.data.default)[0];
-        if (entry) {
-          const [providerId, modelId] = entry;
-          if (modelId) {
-            defaultModel = `${providerId}/${modelId}`;
-          }
-        }
-      }
-
-      const activeModel = currentOverride || defaultModel;
-      const modelList = models.map(m => `  - ${m}${m === activeModel ? ' (active)' : ''}`).join('\n');
-
-      return {
-        success: true,
-        message: `Active model: ${activeModel}${currentOverride ? ' (override)' : ' (default)'}\nDefault: ${defaultModel}\n\nAvailable models:\n${modelList}\n\nUsage:\n  /model <model-id>  — switch model\n  /model reset        — reset to default`,
-      };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to fetch models from OpenCode SDK', { error: msg });
-      
-      // Fallback to original file-based method if SDK fails
-      logger.info('Falling back to config file method');
-      return this.listModelsFromConfig(threadPath, currentOverride);
-    }
+    // Use config file method
+    return this.listModelsFromConfig(threadPath, currentOverride);
   }
 
   private async listModelsFromConfig(threadPath: string, currentOverride: string | null): Promise<CommandResult> {
