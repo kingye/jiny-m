@@ -9,4 +9,5 @@ services:
       - ${OPENCODE_CONFIG:-./opencode.jsonc}:/root/.config/opencode/opencode.jsonc:ro
       - ${JINY_M_DIR}:/opt/jiny-m/jiny283a/workspace/jiny-M/jiny-m
       - ${NETWORKCALC_DIR}:/opt/jiny-m/jiny283a/workspace/networkcalc/c21-networkcalculation-srv
+      - ${CHANNELS_DIR}/.netrc:/root/.netrc
     restart: unless-stopped

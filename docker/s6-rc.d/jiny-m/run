@@ -12,6 +12,7 @@ if [ -f .env ]; then
 fi
 
 # Configure git to use GH_TOKEN for GitHub HTTPS access (if provided)
+git config --global credential.helper netrc
 # if [ -n "$GH_TOKEN" ]; then
 #  git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
 #   git config --global user.name "${GIT_USER_NAME:-jiny-m}"
