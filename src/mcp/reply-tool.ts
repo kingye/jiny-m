@@ -253,7 +253,7 @@ async function handleReplyMessage(
       threadPath,
       {
         sender: replyContext.sender,
-        timestamp: replyContext.timestamp,
+        timestamp: new Date(replyContext.timestamp),
         topic: replyContext.topic,
         bodyText: originalMessage.content.text || '',
       },
