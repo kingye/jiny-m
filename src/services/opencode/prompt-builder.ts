@@ -56,7 +56,7 @@ export class PromptBuilder {
     parts.push('');
     parts.push('## Reply Instructions');
     parts.push('When replying to a message, use the jiny_reply_reply_message tool:');
-    parts.push('- `context`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
+    parts.push('- `token`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)');
     parts.push('CRITICAL: DO NOT decode, modify, re-encode, or add any formatting (backticks, quotes, spaces, newlines) to the token.');
     parts.push('Any change—even a single character—will break the reply.');
     parts.push('- `message`: Your reply text');
