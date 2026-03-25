@@ -62,15 +62,15 @@ server.tool(
   'Send a reply message back through the originating channel. Handles quoting, threading, and reply storage. Attachments must be files within the thread directory (excluding .opencode and .jiny directories).',
   {
     message: z.string().describe('The reply text to send'),
-    context: z.string().describe('The opaque context token from the <reply_context> block. Pass it exactly as-is.'),
+    token: z.string().describe('The opaque context token from the <reply_context> block. Pass it exactly as-is.'),
     attachments: z.array(z.string()).optional().describe('Optional list of filenames within the thread directory to attach'),
   },
-  async ({ message, context: contextToken, attachments: attachmentFilenames }) => {
+  async ({ message, token: contextToken, attachments: attachmentFilenames }) => {
     log('INFO', 'reply_message tool called', {
       messageLength: message?.length,
       messagePreview: message ? message.substring(0, 100) : '(empty)',
-      hasContext: !!contextToken,
-      contextLength: contextToken?.length || 0,
+      hasToken: !!contextToken,
+      tokenLength: contextToken?.length || 0,
       attachments: attachmentFilenames || [],
       cwd: process.cwd(),
       JINY_ROOT: process.env.JINY_ROOT || 'not set',
@@ -116,8 +116,8 @@ async function handleReplyMessage(
     const msg = error instanceof Error ? error.message : 'Unknown validation error';
     log('ERROR', 'Context validation failed', {
       error: msg,
-      contextLength: contextToken?.length,
-      contextPreview: contextToken?.substring(0, 100),
+      tokenLength: contextToken?.length,
+      tokenPreview: contextToken?.substring(0, 100),
     });
     return {
       content: [{ type: 'text' as const, text: `Error: Context validation failed - ${msg}` }],

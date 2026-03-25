@@ -738,7 +738,7 @@ To prevent AI tampering with the opaque token, the system now includes integrity
 
 ```
 MCP Server (stdio subprocess, cwd = thread dir):
-  Tool schema: message (string), context (string, opaque base64 token), attachments (string[], optional)
+  Tool schema: message (string), token (string, opaque base64 token), attachments (string[], optional)
 
   1. Decode base64 context token → JSON → validate required fields
   2. Read context.channel → determine which outbound adapter to use
