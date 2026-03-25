@@ -254,11 +254,8 @@ export class ThreadManager {
         }
 
         // If body is empty after stripping commands, send command results directly
-        // and skip AI processing.
-
-        // If body is empty after stripping commands, send command results directly
         // and skip AI processing (prevents wasteful AI calls for command-only messages)
-        if (commandResults.length > 0) {
+        if (commandResults.length > 0 && (!message.content.text || !message.content.text.trim())) {
           logger.info("reply command results", {
             commandCount: commands.length,
             commandResults: commandResults,
@@ -274,6 +271,7 @@ export class ThreadManager {
 
           const summary = commandResults.join("\n");
           await this.sendDirectReply(message, summary, threadPath, messageDir);
+          return;
         }
       }
 
