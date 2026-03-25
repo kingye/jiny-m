@@ -145,7 +145,7 @@ export class ModelCommandHandler implements CommandHandler {
 
         return {
           success: true,
-          message: `Active model: ${activeModel}${currentOverride ? ' (override)' : ' (default)'}\nDefault: ${defaultModel}\n\nAvailable models:\n${modelList}\n\nUsage:\n  /model <model-id>  — switch model\n  /model reset        — reset to default`,
+          message: `Active model: ${activeModel}${currentOverride ? ' (override)' : ' (default)'}\nDefault: ${defaultModel}\n\nAvailable models:\n${modelList}\n\nUsage:\n  /model &lt;model-id&gt;  — switch model\n  /model reset        — reset to default`,
         };
       } catch {
         continue;
