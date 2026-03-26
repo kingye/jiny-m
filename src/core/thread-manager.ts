@@ -380,14 +380,9 @@ export class ThreadManager {
     const replyText = aiReply.text;
 
     if (!replyText || replyText.trim().length === 0) {
-      logger.warn("Generated reply is empty, skipping send", {
+      logger.info("Generated reply is empty, skipping send", {
         channel: message.channel,
       });
-      await this.storage.storeReply(
-        threadPath,
-        "[Empty reply - not sent]",
-        messageDir,
-      );
       return;
     }
 

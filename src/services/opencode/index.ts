@@ -262,13 +262,26 @@ export class OpenCodeService {
     messageDir?: string,
     onProgress?: (elapsedMs: number, activity: string) => void,
   ): Promise<AiGeneratedReply> {
+    // Build prompts FIRST (no server needed - just file I/O)
+    const systemPrompt = await this.promptBuilder.buildSystemPrompt(threadPath);
+    const prompt = await this.promptBuilder.buildPrompt(
+      message,
+      threadPath,
+      messageDir,
+    );
+
+    if (prompt.trim() === "") {
+      logger.info("Empty message, skipping AI processing");
+      return { text: "", attachments: [], replySentByTool: false };
+    }
+
     await this.ensureServerStarted();
 
     if (!this.client) {
       throw new Error("OpenCode client not initialized");
     }
 
-    // Ensure .opencode directory and opencode.json config exist in thread directory.
+    // Ensure .opencode directory and opencode.json.json config exist in thread directory.
     // opencode.json configures the MCP reply tool so OpenCode discovers it as a project-level tool.
     // Returns true if a new config was written (meaning existing sessions won't have the tool).
     const configFreshlyWritten =
@@ -287,16 +300,6 @@ export class OpenCodeService {
       session = await this.createNewSession(threadPath);
     } else {
       session = await this.getOrCreateSession(threadPath);
-    }
-
-    const systemPrompt = await this.promptBuilder.buildSystemPrompt(threadPath);
-    const prompt = await this.promptBuilder.buildPrompt(
-      message,
-      threadPath,
-      messageDir,
-    );
-    if (prompt.trim() === "") {
-      throw new Error("Empty message, skip AI processing");
     }
 
     logger.debug("Sending prompt to OpenCode", {
