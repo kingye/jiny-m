@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-03-26
+
+### Added
+- **Progress notification for long AI operations**: Thread manager now tracks AI activity and sends periodic progress emails (every 2 minutes) when AI responses take longer than 3 minutes, keeping users informed during lengthy tasks
+
+### Changed
+- **Model command source**: Removed OpenCode SDK API model retrieval, now uses config file only for `/model` command listing
+- **Progress tracking**: Enhanced thread manager with `ProgressTracker` for real-time AI activity monitoring
+- **Prompt builder**: Separated concern — thread manager now handles progress notifications
+
+### Fixed
+- **Command handling**: Only skip AI processing when email body is truly empty after stripping commands (not just whitespace)
+- **Model list formatting**: Removed duplicate "Available" text in `/model` output
+- **HTML escaping**: Angle brackets in model list usage text now properly escaped
+- **Type errors**: Resolved type issues in config, ModelCommandHandler, and reply-tool
+- **ISO timestamp conversion**: Convert ISO timestamp to Date in reply-tool.ts
+- **Code style**: Applied consistent double-quote style and improved error handling
+
 ## [0.3.1] - 2026-03-23
 
 ### Fixed
