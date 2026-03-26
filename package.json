@@ -20,7 +20,7 @@
     "@types/turndown": "^5.0.6"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^6.0.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
