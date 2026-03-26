@@ -22,6 +22,7 @@ import { OpenCodeService } from "../services/opencode";
 import { CommandRegistry } from "./command-handler";
 import { formatQuotedReply, prepareBodyForQuoting } from "./email-parser";
 import { logger } from "./logger";
+import { ProgressTracker } from "./progress-tracker";
 
 /** Queued item waiting to be processed. */
 interface QueueItem {
@@ -285,28 +286,66 @@ export class ThreadManager {
 
       // 4. Generate AI reply
       if (this.replyConfig.mode === "opencode" && this.opencode) {
-        const aiReply = await this.opencode.generateReply(
-          message,
-          threadPath,
-          messageDir,
-        );
+        let progressTracker: ProgressTracker | null = null;
 
-        // If the MCP tool sent the reply, we're done
-        if (aiReply.replySentByTool) {
-          logger.info("Reply sent via MCP reply_message tool", {
+        if (this.replyConfig.progress?.enabled) {
+          const outbound = this.channelRegistry.getOutbound(message.channel);
+          if (outbound && outbound.sendProgressUpdate) {
+            progressTracker = new ProgressTracker(
+              this.replyConfig.progress,
+              async (elapsedMs, activity) => {
+                await outbound.sendProgressUpdate(message, elapsedMs, activity);
+              }
+            );
+            progressTracker.start();
+          }
+        }
+
+        try {
+          const aiReply = await this.opencode.generateReply(
+            message,
+            threadPath,
+            messageDir,
+            (elapsedMs, activity) => {
+              if (progressTracker) {
+                progressTracker.updateActivity(activity);
+              }
+            }
+          );
+
+          // If MCP tool sent to reply, we're done
+          if (aiReply.replySentByTool) {
+            logger.info("Reply sent via MCP reply_message tool", {
+              thread: threadName,
+              channel: message.channel,
+            });
+            if (progressTracker) {
+              progressTracker.stop();
+            }
+            return;
+          }
+
+          // Fallback: MCP tool not used, send via outbound adapter directly
+          logger.info("MCP tool not used, sending reply via outbound adapter", {
             thread: threadName,
             channel: message.channel,
           });
-          return;
+
+          await this.sendFallbackReply(message, aiReply, threadPath, messageDir);
+          if (progressTracker) {
+            progressTracker.stop();
+          }
+        } catch (error) {
+          if (progressTracker) {
+            progressTracker.stop();
+          }
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          logger.error("Failed to process message", {
+            thread: threadName,
+            channel: message.channel,
+            error: msg,
+          });
         }
-
-        // Fallback: MCP tool not used, send via outbound adapter directly
-        logger.info("MCP tool not used, sending reply via outbound adapter", {
-          thread: threadName,
-          channel: message.channel,
-        });
-
-        await this.sendFallbackReply(message, aiReply, threadPath, messageDir);
       } else if (this.replyConfig.mode === "static") {
         const replyText = this.replyConfig.text || "";
         if (replyText) {

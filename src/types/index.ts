@@ -205,12 +205,20 @@ export interface GeneratedFile {
 // Reply / Attachment Config
 // ============================================================================
 
+export interface ProgressConfig {
+  enabled: boolean;
+  initialDelayMs?: number;
+  intervalMs?: number;
+  maxMessages?: number;
+}
+
 export interface ReplyConfig {
   enabled: boolean;
   mode: "static" | "opencode";
   text?: string;
   opencode?: OpenCodeConfig;
   attachments?: AttachmentConfig;
+  progress?: ProgressConfig;
 }
 
 export interface AttachmentConfig {

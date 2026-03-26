@@ -65,6 +65,32 @@ export class EmailOutboundAdapter implements OutboundAdapter {
     return { messageId };
   }
 
+  async sendProgressUpdate(
+    originalMessage: InboundMessage,
+    elapsedMs: number,
+    activity: string,
+  ): Promise<{ messageId: string }> {
+    const elapsedMinutes = Math.floor(elapsedMs / 60000);
+    const elapsedSeconds = Math.floor((elapsedMs % 60000) / 1000);
+    const timeStr = elapsedMinutes > 0
+      ? `${elapsedMinutes}m ${elapsedSeconds}s`
+      : `${elapsedSeconds}s`;
+
+    const subject = `[Processing Update] ${originalMessage.topic}`;
+    const body = `Still processing your request...\n\n` +
+      `Time elapsed: ${timeStr}\n` +
+      `Current activity: ${activity}\n\n` +
+      `Estimated completion: Working on it...`;
+
+    const email = this.inboundMessageToEmail(originalMessage);
+    const messageId = await this.smtpService.replyToEmail(
+      { ...email, subject },
+      body,
+      []
+    );
+    return { messageId };
+  }
+
   /**
    * Get the underlying SmtpService (for direct access when needed,
    * e.g. by the MCP reply tool which needs low-level control).

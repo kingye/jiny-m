@@ -158,12 +158,23 @@ export interface OutboundAdapter {
   /**
    * Send a fresh (non-reply) alert/notification through this channel.
    * Optional — not all channels may support this.
-   * Returns the external message ID of the sent message.
+   * Returns external message ID of sent message.
    */
   sendAlert?(
     recipient: string,
     subject: string,
     body: string,
+  ): Promise<{ messageId: string }>;
+
+  /**
+   * Send a progress update in the same conversation thread.
+   * Optional — not all channels may support this.
+   * Returns external message ID of sent message.
+   */
+  sendProgressUpdate?(
+    originalMessage: InboundMessage,
+    elapsedMs: number,
+    activity: string,
   ): Promise<{ messageId: string }>;
 }
 

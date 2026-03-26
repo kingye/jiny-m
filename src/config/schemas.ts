@@ -305,12 +305,48 @@ export function validateReplyConfig(config: any): ReplyConfig {
       }
     : undefined;
 
+  const progressConfig = config.progress
+    ? validateProgressConfig(config.progress)
+    : undefined;
+
   return {
     enabled: config.enabled ?? false,
     mode: config.mode ?? 'static',
     text: config.text ?? '',
     opencode: opencodeConfig,
     attachments: attachmentConfig,
+    progress: progressConfig,
+  };
+}
+
+function validateProgressConfig(config: any): ReplyConfig['progress'] {
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new ConfigValidationError('Progress enabled must be a boolean');
+  }
+  if (config.initialDelayMs !== undefined && typeof config.initialDelayMs !== 'number') {
+    throw new ConfigValidationError('Progress initialDelayMs must be a number');
+  }
+  if (config.initialDelayMs !== undefined && config.initialDelayMs < 1000) {
+    throw new ConfigValidationError('Progress initialDelayMs must be at least 1000ms');
+  }
+  if (config.intervalMs !== undefined && typeof config.intervalMs !== 'number') {
+    throw new ConfigValidationError('Progress intervalMs must be a number');
+  }
+  if (config.intervalMs !== undefined && config.intervalMs < 1000) {
+    throw new ConfigValidationError('Progress intervalMs must be at least 1000ms');
+  }
+  if (config.maxMessages !== undefined && typeof config.maxMessages !== 'number') {
+    throw new ConfigValidationError('Progress maxMessages must be a number');
+  }
+  if (config.maxMessages !== undefined && (config.maxMessages < 1 || config.maxMessages > 10)) {
+    throw new ConfigValidationError('Progress maxMessages must be between 1 and 10');
+  }
+
+  return {
+    enabled: config.enabled,
+    initialDelayMs: config.initialDelayMs ?? 180000,
+    intervalMs: config.intervalMs ?? 180000,
+    maxMessages: config.maxMessages ?? 5,
   };
 }
 

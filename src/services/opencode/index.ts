@@ -260,6 +260,7 @@ export class OpenCodeService {
     message: InboundMessage,
     threadPath: string,
     messageDir?: string,
+    onProgress?: (elapsedMs: number, activity: string) => void,
   ): Promise<AiGeneratedReply> {
     await this.ensureServerStarted();
 
@@ -324,7 +325,7 @@ export class OpenCodeService {
     // Clean up any stale signal file from a previous run before starting.
     await this.cleanupStaleSignalFile(threadPath);
     const { parts: resultParts, replySentByTool } =
-      await this.promptWithProgress(session, threadPath, systemPrompt, prompt);
+      await this.promptWithProgress(session, threadPath, systemPrompt, prompt, onProgress);
 
     const aiReply = this.extractAiReply(resultParts as Array<any>);
     aiReply.replySentByTool =
@@ -361,6 +362,7 @@ export class OpenCodeService {
           threadPath,
           systemPrompt,
           prompt,
+          onProgress,
         );
         const retryReply = this.extractAiReply(retryResult.parts as Array<any>);
         retryReply.replySentByTool =
@@ -561,6 +563,7 @@ export class OpenCodeService {
     threadPath: string,
     systemPrompt: string,
     prompt: string,
+    onProgress?: (elapsedMs: number, activity: string) => void,
   ): Promise<{ parts: Array<any>; replySentByTool: boolean }> {
     if (!this.client) throw new Error("OpenCode client not initialized");
 
@@ -646,6 +649,10 @@ export class OpenCodeService {
           activity,
           silence: `${Math.round(silenceMs / 1000)}s`,
         });
+
+        if (onProgress) {
+          onProgress(elapsedMs, activity);
+        }
       }
 
       // Use a longer timeout when a tool is actively running — OpenCode doesn't emit
