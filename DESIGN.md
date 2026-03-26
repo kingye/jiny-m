@@ -80,10 +80,13 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                   Worker (per thread)                             │
 │  Picks up message from queue → processes → picks next            │
 │                                                                   │
+│  0. If reply.progress enabled: ProgressTracker.start()            │
 │  1. MessageStorage.store(msg) → messages/<ts>/received.md        │
 │  2. Save inbound attachments (whitelisted)                       │
 │  3. PromptBuilder.buildPrompt(msg) → prompt with <reply_context> │
 │  4. OpenCode.generateReply(msg) — SSE streaming, may take mins   │
+│      - Progress callback triggered every 10s during AI processing     │
+│      - ProgressTracker checks thresholds → sends updates at 180s, 360s...│
 │  5. <reply_context> is a base64 opaque token (metadata only)      │
 │                                                                   │
 │  ┌─────────────────────────────────────────┐                     │
@@ -97,7 +100,8 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  └──────────────────┬──────────────────────┘                     │
 │                     │                                             │
 │  6. Fallback: ThreadManager sends via OutboundAdapter            │
-│  7. storage.storeReply()                                         │
+│  7. ProgressTracker.stop()                                        │
+│  8. storage.storeReply()                                         │
 │  8. Worker picks next message from queue                         │
 └─────────────────────┼───────────────────────────────────────────┘
                       │
@@ -123,13 +127,14 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 4. **Message Router** - Delegates matching/naming to adapters, dispatches to thread queues
 5. **Thread Manager** - Per-thread queues with concurrency-limited workers
 6. **Worker (OpenCode Service)** - AI processing with SSE streaming, session management
-7. **Prompt Builder** - Builds channel-agnostic prompts from InboundMessage
-8. **MCP Reply Tool** - `reply_message` tool, routes replies to OutboundAdapter based on channel
-9. **Message Storage** - Persist messages and replies per thread in `messages/` directories
-10. **State Manager** - Track processed UIDs per channel, handle migrations
-11. **Security Module** - Path validation, file size/extension checks for attachments
-12. **Alert Service** - Error alert digests + periodic health check reports via email
-13. **Command System** - Email `/command` parsing and execution (e.g., `/model` for model switching)
+7. **Progress Tracker** - Manages timing and sends periodic progress updates during long AI operations
+8. **Prompt Builder** - Builds channel-agnostic prompts from InboundMessage
+9. **MCP Reply Tool** - `reply_message` tool, routes replies to OutboundAdapter based on channel
+10. **Message Storage** - Persist messages and replies per thread in `messages/` directories
+11. **State Manager** - Track processed UIDs per channel, handle migrations
+12. **Security Module** - Path validation, file size/extension checks for attachments
+13. **Alert Service** - Error alert digests + periodic health check reports via email
+14. **Command System** - Email `/command` parsing and execution (e.g., `/model` for model switching)
 
 ### Design Principles: Component Responsibilities
 
@@ -171,6 +176,14 @@ Each component has a single, clear responsibility. Data flows through the system
 - Just a transport tool that converts format and sends
 - **Auto-reconnect**: `sendReply()` and `sendMail()` wrap their internal send with a one-retry-on-connection-error pattern. If the error message (lowercased) contains `"connect"`, `"econn"`, or `"timeout"`, the service calls `reconnect()` (disconnect + connect) and retries once. Other errors are thrown immediately.
 - **Shared instance**: A single `SmtpService` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, MCP reply tool (creates its own instance), and AlertService. The adapter stays connected for the process lifetime — consumers must not call `disconnect()` after individual sends.
+
+**ProgressTracker**
+- Manages timing and thresholds for progress notifications
+- Starts background interval checking every 5 seconds
+- Sends progress updates at configured intervals (default: 180s, 360s, 540s, 720s, 900s)
+- Includes time elapsed, current activity, and estimated completion in email body
+- Stops and cleans up when processing completes
+- Uses channel-specific outbound adapter to send progress emails via `sendProgressUpdate()`
 
 **ReplyContext** (base64 opaque token)
 - Metadata-only: contains channel type, sender, recipient, subject, `incomingMessageDir`, threading IDs
@@ -536,14 +549,15 @@ promptWithProgress() (SSE streaming):
   1. Subscribe to SSE events ({ directory: threadPath })
   2. Fire promptAsync() (returns immediately)
   3. Process events (filtered by sessionID, deduped):
-     - server.connected → confirm SSE stream alive
-     - message.updated → capture modelID/providerID
-     - message.part.updated → accumulate parts, detect tool calls
-     - session.status → track busy/retry (deduped)
-     - session.idle → done, collect result
-     - session.error → handle (ContextOverflow → new session + retry)
+      - server.connected → confirm SSE stream alive
+      - message.updated → capture modelID/providerID
+      - message.part.updated → accumulate parts, detect tool calls
+      - session.status → track busy/retry (deduped)
+      - session.idle → done, collect result
+      - session.error → handle (ContextOverflow → new session + retry)
   4. Activity-based timeout: 5 min of silence → timeout (10 min when tool running)
   5. Progress log every 10s (elapsed, parts, activity, silence)
+      - Calls onProgress callback if provided (for progress updates)
   6. Step start/finish: log model used per step (detects main vs small_model usage)
        ↓
 OpenCode calls reply_message MCP tool
@@ -1043,6 +1057,12 @@ Each directory contains:
       "systemPrompt": "You are an AI assistant.\nRespond professionally and concisely.",
       "includeThreadHistory": true
     },
+    "progress": {
+      "enabled": true,
+      "initialDelayMs": 180000,
+      "intervalMs": 180000,
+      "maxMessages": 5
+    },
     "attachments": {
       "enabled": true,
       "maxFileSize": "10mb",
@@ -1482,8 +1502,15 @@ Optional method on the `OutboundAdapter` interface for sending fresh (non-reply)
 interface OutboundAdapter {
   // ... existing methods ...
   sendAlert?(recipient: string, subject: string, body: string): Promise<{ messageId: string }>;
+  sendProgressUpdate?(originalMessage: InboundMessage, elapsedMs: number, activity: string): Promise<{ messageId: string }>;
 }
 ```
+
+**Progress Update Email**:
+- Subject: `[Processing Update] {original subject}`
+- Body contains: time elapsed, current activity, estimated completion
+- Uses `sendReply()` internally (via `SmtpService.replyToEmail()`) to preserve threading
+- References header maintained → email appears in same conversation thread
 
 `EmailOutboundAdapter` implements this via `SmtpService.sendMail()` — a new method that sends fresh emails without the `Re:` prefix or threading headers (`In-Reply-To`, `References`).
 
